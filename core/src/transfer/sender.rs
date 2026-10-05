@@ -4,9 +4,9 @@ use uuid::Uuid;
 
 use super::discovery::{get_windows_hotspot_probe_ips, TransportPreference};
 use super::registry::{
-    get_registry, register_active_transfer_with_path, set_transfer_actor_handle,
-    set_transfer_status, update_transfer_progress, update_transfer_transport_name,
-    TransferHandle,
+    get_registry, get_transfer_actor_handle, register_active_transfer_with_path,
+    set_transfer_actor_handle, set_transfer_status, update_transfer_progress,
+    update_transfer_transport_name, TransferHandle,
 };
 use super::session::{
     send_file_session_multipath, send_file_session_multipath_ext, SessionOptions,
@@ -31,6 +31,40 @@ static CUSTOM_DATA_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 pub fn set_custom_data_dir(path: PathBuf) {
     let _ = std::fs::create_dir_all(&path);
     *CUSTOM_DATA_DIR.write() = Some(path);
+}
+
+static CUSTOM_TEMP_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn set_custom_temp_dir(path: PathBuf) {
+    let _ = std::fs::create_dir_all(&path);
+    *CUSTOM_TEMP_DIR.write() = Some(path);
+}
+
+pub fn default_temp_dir() -> PathBuf {
+    if let Some(custom) = &*CUSTOM_TEMP_DIR.read() {
+        let _ = std::fs::create_dir_all(custom);
+        return custom.clone();
+    }
+    if let Ok(dir) = std::env::var("TURBOTRANSFER_TEMP_DIR") {
+        let p = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&p);
+        return p;
+    }
+    #[cfg(target_os = "android")]
+    {
+        let candidates = [
+            PathBuf::from("/data/data/com.turbotransfer/cache"),
+            PathBuf::from("/data/user/0/com.turbotransfer/cache"),
+        ];
+        for c in &candidates {
+            if std::fs::create_dir_all(c).is_ok() {
+                return c.clone();
+            }
+        }
+    }
+    let p = std::env::temp_dir().join("turbotransfer_bench");
+    let _ = std::fs::create_dir_all(&p);
+    p
 }
 
 /// Returns the default metadata storage directory (§12).
@@ -87,13 +121,18 @@ pub fn find_resumable_transfer(target_id: Option<Uuid>) -> Option<(PathBuf, Tran
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(meta) = serde_json::from_str::<TransferMeta>(&content) {
                     if let Some(tid) = target_id {
-                        if meta.transfer_id == tid {
+                        if meta.transfer_id == tid
+                            && (meta.status == TransferStatus::Paused
+                                || meta.status == TransferStatus::InProgress)
+                        {
                             return Some((path, meta));
                         }
-                    } else if meta.status != TransferStatus::Completed {
-                        let is_newer = candidate.as_ref().map_or(true, |(_, _, ts)| {
-                            meta.created_at.as_str() > ts.as_str()
-                        });
+                    } else if meta.status == TransferStatus::Paused
+                        || meta.status == TransferStatus::InProgress
+                    {
+                        let is_newer = candidate
+                            .as_ref()
+                            .map_or(true, |(_, _, ts)| meta.created_at.as_str() > ts.as_str());
                         if is_newer {
                             candidate = Some((path, meta.clone(), meta.created_at));
                         }
@@ -130,14 +169,22 @@ pub fn prepare_send_mode() {
                 }
             }
 
-            if let Some(config) = WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await {
-                log::info!("[SendMode] Discovered hotspot: SSID='{}', associating Windows WLAN...", config.ssid);
+            if let Some(config) =
+                WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await
+            {
+                log::info!(
+                    "[SendMode] Discovered hotspot: SSID='{}', associating Windows WLAN...",
+                    config.ssid
+                );
                 #[cfg(target_os = "windows")]
                 {
                     if let Err(e) = WifiDirectTransport::associate_wlan_windows(&config).await {
                         log::warn!("[SendMode] Failed to associate Windows WLAN: {}", e);
                     } else {
-                        log::info!("[SendMode] Successfully associated Windows WLAN with '{}'!", config.ssid);
+                        log::info!(
+                            "[SendMode] Successfully associated Windows WLAN with '{}'!",
+                            config.ssid
+                        );
                     }
                 }
             }
@@ -185,7 +232,11 @@ pub async fn resolve_and_connect_transports_with_streams(
                     }
                     #[cfg(target_os = "windows")]
                     {
-                        if let Some(config) = WifiDirectTransport::probe_hotspot_control_channel(std::time::Duration::from_millis(250)).await {
+                        if let Some(config) = WifiDirectTransport::probe_hotspot_control_channel(
+                            std::time::Duration::from_millis(250),
+                        )
+                        .await
+                        {
                             let cur_ssid = WifiDirectTransport::get_current_windows_wifi_ssid();
                             if cur_ssid.as_deref() != Some(&config.ssid) {
                                 let _ = WifiDirectTransport::associate_wlan_windows(&config).await;
@@ -236,7 +287,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                     })?;
                 let target_ip = if config.target_ip.is_empty() {
                     WifiDirectTransport::resolve_windows_default_gateway()
-                        .unwrap_or_else(|_| "10.18.163.130".to_string())
+                        .unwrap_or_else(|_| "192.168.43.1".to_string())
                 } else {
                     config.target_ip.clone()
                 };
@@ -244,10 +295,8 @@ pub async fn resolve_and_connect_transports_with_streams(
                 for stream_idx in 1..=stream_count {
                     if let Ok(t) = TcpTransport::connect(&target_addr).await {
                         transports.push((Box::new(t), false));
-                        transport_names.push(format!(
-                            "5 GHz Local-Only Hotspot (Stream #{})",
-                            stream_idx
-                        ));
+                        transport_names
+                            .push(format!("5 GHz Local-Only Hotspot (Stream #{})", stream_idx));
                     }
                 }
                 if transports.is_empty() {
@@ -320,7 +369,11 @@ pub async fn resolve_and_connect_transports_with_streams(
 
             // 2. Connect Wi-Fi Direct channel with bonded sockets if not already connected
             let is_explicit_loopback = address
-                .map(|a| a.contains("127.0.0.1") || a.contains("localhost") || a.to_lowercase().contains("usb"))
+                .map(|a| {
+                    a.contains("127.0.0.1")
+                        || a.contains("localhost")
+                        || a.to_lowercase().contains("usb")
+                })
                 .unwrap_or(false);
             if !wifi_connected && !is_explicit_loopback {
                 let probe_ips = get_windows_hotspot_probe_ips();
@@ -335,10 +388,8 @@ pub async fn resolve_and_connect_transports_with_streams(
                         {
                             if let Ok(transport) = t {
                                 transports.push((Box::new(transport), false));
-                                transport_names.push(format!(
-                                    "5 GHz Wi-Fi Direct (Stream #{})",
-                                    stream_idx
-                                ));
+                                transport_names
+                                    .push(format!("5 GHz Wi-Fi Direct (Stream #{})", stream_idx));
                                 connected_any = true;
                             }
                         }
@@ -416,14 +467,10 @@ pub async fn resolve_and_connect_transports_with_streams(
                     }
                     // Probe Wi-Fi Direct / Hotspot gateway and ARP peers
                     let mut probe_ips: Vec<String> = vec![
-                        "10.18.163.1:9876".to_string(),
-                        "10.18.163.2:9876".to_string(),
-                        "10.18.163.130:9876".to_string(),
-                        "10.78.112.40:9876".to_string(),
                         "192.168.43.1:9876".to_string(),
                         "192.168.43.2:9876".to_string(),
+                        "192.168.49.1:9876".to_string(),
                         "192.168.137.1:9876".to_string(),
-                        "192.168.1.19:9876".to_string(),
                     ];
                     if let Ok(arp_content) = std::fs::read_to_string("/proc/net/arp") {
                         for line in arp_content.lines().skip(1) {
@@ -586,15 +633,16 @@ pub async fn start_transfer(
         crate::benchmark::get_saved_calibration(peer_key)
     };
 
-    let (wifi_stream_override, chunk_size_override, wifi_window_preset) = if let Some(cal) = &saved_cal {
-        (
-            cal.config.wifi_stream_count,
-            cal.config.chunk_size_bytes,
-            cal.config.wifi_window_preset,
-        )
-    } else {
-        (None, None, None)
-    };
+    let (wifi_stream_override, chunk_size_override, wifi_window_preset) =
+        if let Some(cal) = &saved_cal {
+            (
+                cal.config.wifi_stream_count,
+                cal.config.chunk_size_bytes,
+                cal.config.wifi_window_preset,
+            )
+        } else {
+            (None, None, None)
+        };
 
     let is_high_speed = transport_pref == TransportPreference::UsbOnly
         || transport_pref == TransportPreference::Combined;
@@ -692,6 +740,9 @@ pub async fn start_transfer(
 
         match res {
             Ok(()) => {
+                if let Some(actor_handle) = get_transfer_actor_handle(transfer_id) {
+                    actor_handle.complete().await;
+                }
                 set_transfer_status(transfer_id, TransferStatus::Completed, None);
             }
             Err(TransferSessionError::Paused | TransferSessionError::Cancelled) => {
@@ -838,6 +889,9 @@ pub async fn resume_transfer(
 
         match res {
             Ok(()) => {
+                if let Some(actor_handle) = get_transfer_actor_handle(tid) {
+                    actor_handle.complete().await;
+                }
                 set_transfer_status(tid, TransferStatus::Completed, None);
             }
             Err(TransferSessionError::Paused | TransferSessionError::Cancelled) => {}

@@ -9,9 +9,7 @@ use turbotransfer_core::checksum::{
     compute_crc32c, compute_file_crc32c, compute_xxhash64, crc32c_combine, Crc32cAccumulator,
 };
 use turbotransfer_core::chunk::calculate_chunk_plan;
-use turbotransfer_core::protocol::{
-    encode_frame_parts, ChunkDataPayload, FrameReader, Message,
-};
+use turbotransfer_core::protocol::{encode_frame_parts, ChunkDataPayload, FrameReader, Message};
 use turbotransfer_core::transfer::api::{
     enter_receive_mode, leave_receive_mode, start_transfer, transfer_control_status,
     TransportPreference, DEFAULT_WIFI_PARALLEL_STREAMS,
@@ -128,17 +126,16 @@ async fn test_vectored_io_framing_integrity() {
     let payload_slice = maybe_payload.unwrap_or(&[]);
 
     // Transmit via OS vectored I/O write_all_vectored
-    let send_future = async {
-        write_all_vectored(&mut client_writer, &header, payload_slice).await
-    };
+    let send_future =
+        async { write_all_vectored(&mut client_writer, &header, payload_slice).await };
 
-    let recv_future = async {
-        frame_reader.read_frame().await
-    };
+    let recv_future = async { frame_reader.read_frame().await };
 
     let (send_res, recv_res) = tokio::join!(send_future, recv_future);
     send_res.expect("write_all_vectored must succeed");
-    let received_msg = recv_res.expect("read_frame must succeed").expect("Must receive a valid frame");
+    let received_msg = recv_res
+        .expect("read_frame must succeed")
+        .expect("Must receive a valid frame");
 
     match received_msg {
         Message::ChunkData(d) => {
@@ -227,11 +224,14 @@ async fn test_4x_channel_bonding_multipath_transfer() {
     }
 
     leave_receive_mode(Some(receiver_addr));
-    assert!(completed, "4x channel bonded transfer should complete to 100%");
+    assert!(
+        completed,
+        "4x channel bonded transfer should complete to 100%"
+    );
 
     // Verify Fix B1: 100% of throughput is accounted to Wi-Fi, 0 to USB
-    let progress = turbotransfer_core::transfer::api::get_progress(transfer_id)
-        .expect("Progress must exist");
+    let progress =
+        turbotransfer_core::transfer::api::get_progress(transfer_id).expect("Progress must exist");
     assert!(
         progress.wifi_throughput_bps > 0.0,
         "Transferred throughput must be tagged as Wi-Fi"
@@ -243,10 +243,16 @@ async fn test_4x_channel_bonding_multipath_transfer() {
 
     // Verify received file matches source
     let output_file = dest_dir.join("multi_stream_src.bin");
-    assert!(output_file.exists(), "Output file must exist after transfer");
+    assert!(
+        output_file.exists(),
+        "Output file must exist after transfer"
+    );
 
     let final_crc = compute_file_crc32c(&output_file).unwrap();
-    assert_eq!(final_crc, expected_crc, "Output file CRC must match source exactly");
+    assert_eq!(
+        final_crc, expected_crc,
+        "Output file CRC must match source exactly"
+    );
 }
 
 /// Test 6: Verify duplicate chunk handling maintains complete CRC table for O(1) GF(2) checksum (Fix B2).
@@ -271,7 +277,10 @@ async fn test_duplicate_chunk_crc_table_retention() {
     let file_id = Uuid::new_v4();
 
     let (client, server) = duplex(64 * 1024);
-    let transport = turbotransfer_core::transport::StreamTransport::new(server, turbotransfer_core::transport::TransportKind::Tcp);
+    let transport = turbotransfer_core::transport::StreamTransport::new(
+        server,
+        turbotransfer_core::transport::TransportKind::Tcp,
+    );
 
     let recv_task = tokio::spawn(async move {
         turbotransfer_core::transfer::session::receive_file_session(
@@ -286,83 +295,113 @@ async fn test_duplicate_chunk_crc_table_retention() {
 
     let send_data = data.clone();
     let send_task = tokio::spawn(async move {
-        let mut client_transport = turbotransfer_core::transport::StreamTransport::new(client, turbotransfer_core::transport::TransportKind::Tcp);
+        let mut client_transport = turbotransfer_core::transport::StreamTransport::new(
+            client,
+            turbotransfer_core::transport::TransportKind::Tcp,
+        );
         // Hello
-        client_transport.send_frame(&Message::Hello(turbotransfer_core::protocol::HelloData {
-            device_id: Uuid::new_v4(),
-            device_name: "Sender".into(),
-            protocol_version: 1,
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::Hello(turbotransfer_core::protocol::HelloData {
+                device_id: Uuid::new_v4(),
+                device_name: "Sender".into(),
+                protocol_version: 1,
+            }))
+            .await
+            .unwrap();
 
         let _ = client_transport.receive_frame().await.unwrap(); // peer hello
 
         // Offer
-        client_transport.send_frame(&Message::TransferOffer(turbotransfer_core::protocol::TransferOfferData {
-            transfer_id,
-            file_id,
-            file_name: "dup_test.bin".into(),
-            file_size: file_size as u64,
-            chunk_size: chunk_size as u32,
-            total_chunks: 2,
-            checksum_algo: "xxhash64".into(),
-            purpose: turbotransfer_core::benchmark::TransferPurpose::Normal,
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::TransferOffer(
+                turbotransfer_core::protocol::TransferOfferData {
+                    transfer_id,
+                    file_id,
+                    file_name: "dup_test.bin".into(),
+                    file_size: file_size as u64,
+                    chunk_size: chunk_size as u32,
+                    total_chunks: 2,
+                    checksum_algo: "xxhash64".into(),
+                    purpose: turbotransfer_core::benchmark::TransferPurpose::Normal,
+                },
+            ))
+            .await
+            .unwrap();
 
         let _ = client_transport.receive_frame().await.unwrap(); // accept
 
         // Send chunk 0
         let c0_payload = send_data[0..chunk_size].to_vec();
         let c0_hash = compute_xxhash64(&c0_payload);
-        client_transport.send_frame(&Message::ChunkData(ChunkDataPayload {
-            transfer_id,
-            file_id,
-            chunk_id: 0,
-            file_offset: 0,
-            payload_length: chunk_size as u32,
-            checksum: c0_hash,
-            payload: c0_payload.clone(),
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::ChunkData(ChunkDataPayload {
+                transfer_id,
+                file_id,
+                chunk_id: 0,
+                file_offset: 0,
+                payload_length: chunk_size as u32,
+                checksum: c0_hash,
+                payload: c0_payload.clone(),
+            }))
+            .await
+            .unwrap();
         let _ = client_transport.receive_frame().await.unwrap(); // ack 0
 
         // Send chunk 0 AGAIN (duplicate)
-        client_transport.send_frame(&Message::ChunkData(ChunkDataPayload {
-            transfer_id,
-            file_id,
-            chunk_id: 0,
-            file_offset: 0,
-            payload_length: chunk_size as u32,
-            checksum: c0_hash,
-            payload: c0_payload,
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::ChunkData(ChunkDataPayload {
+                transfer_id,
+                file_id,
+                chunk_id: 0,
+                file_offset: 0,
+                payload_length: chunk_size as u32,
+                checksum: c0_hash,
+                payload: c0_payload,
+            }))
+            .await
+            .unwrap();
         let _ = client_transport.receive_frame().await.unwrap(); // ack 0 dup
 
         // Send chunk 1
         let c1_payload = send_data[chunk_size..file_size].to_vec();
         let c1_hash = compute_xxhash64(&c1_payload);
-        client_transport.send_frame(&Message::ChunkData(ChunkDataPayload {
-            transfer_id,
-            file_id,
-            chunk_id: 1,
-            file_offset: chunk_size as u64,
-            payload_length: chunk_size as u32,
-            checksum: c1_hash,
-            payload: c1_payload,
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::ChunkData(ChunkDataPayload {
+                transfer_id,
+                file_id,
+                chunk_id: 1,
+                file_offset: chunk_size as u64,
+                payload_length: chunk_size as u32,
+                checksum: c1_hash,
+                payload: c1_payload,
+            }))
+            .await
+            .unwrap();
         let _ = client_transport.receive_frame().await.unwrap(); // ack 1
 
         // Send Complete
         let full_crc = compute_crc32c(&send_data);
-        client_transport.send_frame(&Message::Complete(turbotransfer_core::protocol::CompleteData {
-            transfer_id,
-            file_checksum: full_crc,
-        })).await.unwrap();
+        client_transport
+            .send_frame(&Message::Complete(
+                turbotransfer_core::protocol::CompleteData {
+                    transfer_id,
+                    file_checksum: full_crc,
+                },
+            ))
+            .await
+            .unwrap();
         let _ = client_transport.receive_frame().await.unwrap(); // final ack
     });
 
     let (r_res, s_res) = tokio::join!(recv_task, send_task);
     s_res.unwrap();
-    let out_path = r_res.unwrap().expect("Receiver session should succeed without CRC mismatch");
-    assert_eq!(compute_file_crc32c(&out_path).unwrap(), compute_crc32c(&data));
+    let out_path = r_res
+        .unwrap()
+        .expect("Receiver session should succeed without CRC mismatch");
+    assert_eq!(
+        compute_file_crc32c(&out_path).unwrap(),
+        compute_crc32c(&data)
+    );
 }
 
 /// Test 7: Verify telemetry peak speed, channel throughput breakdown, and accurate bottleneck reporting.
@@ -388,31 +427,134 @@ fn test_telemetry_peak_speed_and_bottleneck_accuracy() {
     tel.mark_completed();
 
     let report = tel.generate_bottleneck_report();
-    assert!(report.avg_throughput_mbps > 0.0, "Average throughput must be positive");
-    assert!(report.peak_throughput_mbps >= report.avg_throughput_mbps, "Peak throughput must be >= average throughput");
+    assert!(
+        report.avg_throughput_mbps > 0.0,
+        "Average throughput must be positive"
+    );
+    assert!(
+        report.peak_throughput_mbps >= report.avg_throughput_mbps,
+        "Peak throughput must be >= average throughput"
+    );
     assert_eq!(report.channels.len(), 2, "Must have 2 active channels");
 
     for ch in &report.channels {
         assert!(ch.bytes_transferred > 0);
-        assert!(ch.throughput_mbps > 0.0, "Channel throughput must be > 0 MB/s");
+        assert!(
+            ch.throughput_mbps > 0.0,
+            "Channel throughput must be > 0 MB/s"
+        );
         assert_eq!(ch.nack_count, 0);
         assert_eq!(ch.disconnect_count, 0);
     }
 
     // Zero packet loss & fast wire speed => BALANCED_WIRE_SPEED or NETWORK_BANDWIDTH_LIMIT (never NETWORK_LATENCY_JITTER)
     assert_ne!(
-        report.primary_bottleneck,
-        "NETWORK_LATENCY_JITTER",
+        report.primary_bottleneck, "NETWORK_LATENCY_JITTER",
         "Zero NACKs must never be diagnosed as NETWORK_LATENCY_JITTER"
     );
 
     let temp_dir = tempdir().unwrap();
-    let (_, log_path) = tel.export_log_files(temp_dir.path()).expect("Log export must succeed");
+    let (_, log_path) = tel
+        .export_log_files(temp_dir.path())
+        .expect("Log export must succeed");
     let log_content = std::fs::read_to_string(log_path).expect("Log file must exist");
 
-    assert!(log_content.contains("Peak Speed"), "Log must contain Peak Speed");
-    assert!(log_content.contains("MB/s"), "Log must contain MB/s throughput values");
-    assert!(log_content.contains("Sender Disk Read"), "Sender log must contain Sender Disk Read");
-    assert!(log_content.contains("N/A (Sender Role Session)"), "Sender log must mark Receiver Disk Write as N/A");
+    assert!(
+        log_content.contains("Peak Speed"),
+        "Log must contain Peak Speed"
+    );
+    assert!(
+        log_content.contains("MB/s"),
+        "Log must contain MB/s throughput values"
+    );
+    assert!(
+        log_content.contains("Sender Disk Read"),
+        "Sender log must contain Sender Disk Read"
+    );
+    assert!(
+        log_content.contains("N/A (Sender Role Session)"),
+        "Sender log must mark Receiver Disk Write as N/A"
+    );
 }
 
+/// Test 8: Validate sequential reordering writer handles out-of-order chunk streams.
+#[tokio::test]
+async fn test_sequential_reorder_writer_out_of_order() {
+    let temp_dir = tempdir().unwrap();
+    let file_path = temp_dir.path().join("reorder_dest.bin");
+
+    let chunk_size = 256 * 1024; // 256 KiB
+    let num_chunks = 8;
+    let total_size = chunk_size * num_chunks;
+
+    let source_data: Vec<u8> = (0..total_size)
+        .map(|i| ((i * 23 + 7) % 256) as u8)
+        .collect();
+    let expected_crc = turbotransfer_core::checksum::compute_crc32c(&source_data);
+
+    let file = turbotransfer_core::util::storage::open_sequential_write(&file_path).unwrap();
+    turbotransfer_core::util::storage::preallocate_file(&file, total_size as u64).unwrap();
+
+    // Prepare chunks
+    let mut chunks = Vec::new();
+    for cid in 0..num_chunks {
+        let offset = (cid * chunk_size) as u64;
+        let payload = source_data[(cid * chunk_size)..((cid + 1) * chunk_size)].to_vec();
+        chunks.push((cid as u32, offset, payload));
+    }
+
+    // Deliver in heavily shuffled out-of-order sequence
+    let arrival_order = [5, 2, 7, 0, 4, 1, 6, 3];
+    let (disk_tx, disk_rx) = async_channel::bounded(16);
+    let writer_file = std::sync::Arc::new(file);
+
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut next_expected = 0u32;
+        let mut pending: std::collections::BTreeMap<u32, (u64, Vec<u8>)> =
+            std::collections::BTreeMap::new();
+
+        while let Ok((cid, offset, payload)) = disk_rx.recv_blocking() {
+            if cid > next_expected {
+                pending.insert(cid, (offset, payload));
+                continue;
+            }
+            if cid < next_expected {
+                continue;
+            }
+
+            turbotransfer_core::util::storage::write_at_offset(&writer_file, offset, &payload)
+                .unwrap();
+            next_expected += 1;
+
+            while let Some((&next_id, _)) = pending.range(next_expected..).next() {
+                if next_id == next_expected {
+                    let (_, (off, p)) = pending.remove_entry(&next_id).unwrap();
+                    turbotransfer_core::util::storage::write_at_offset(&writer_file, off, &p)
+                        .unwrap();
+                    next_expected += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        while let Some((_, (off, p))) = pending.pop_first() {
+            turbotransfer_core::util::storage::write_at_offset(&writer_file, off, &p).unwrap();
+        }
+    });
+
+    for &idx in &arrival_order {
+        let (cid, offset, ref payload) = chunks[idx];
+        disk_tx.send((cid, offset, payload.clone())).await.unwrap();
+    }
+    disk_tx.close();
+    handle.await.unwrap();
+
+    let actual_bytes = std::fs::read(&file_path).unwrap();
+    assert_eq!(actual_bytes.len(), total_size);
+    let actual_crc = turbotransfer_core::checksum::compute_crc32c(&actual_bytes);
+    assert_eq!(
+        actual_crc, expected_crc,
+        "File contents and CRC32C must match perfectly after sequential reordering"
+    );
+}

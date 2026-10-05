@@ -11,14 +11,16 @@ use super::registry::{
     reset_transfer_start_time, set_transfer_actor_handle, set_transfer_status,
     transfer_control_status, update_transfer_progress,
 };
-use super::sender::{default_data_dir, find_resumable_transfer, DEFAULT_LISTEN_ADDR};
+use super::sender::{
+    default_data_dir, default_temp_dir, find_resumable_transfer, DEFAULT_LISTEN_ADDR,
+};
 use super::session::TransferSessionError;
 use super::tracker::InMemoryChunkTracker;
 use crate::checksum::{compute_file_crc32c, compute_xxhash64};
 use crate::manifest::{MetaActor, TransferMeta, TransferRole, TransferStatus, TransportType};
 use crate::protocol::{
-    ChunkAckData, ChunkNackData, HelloData, Message, TransferAcceptData,
-    CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+    ChunkAckData, ChunkNackData, HelloData, Message, TransferAcceptData, CURRENT_PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
 };
 use crate::transport::{TcpListenerTransport, Transport};
 #[cfg(not(target_os = "android"))]
@@ -48,15 +50,12 @@ pub(crate) enum DiskWriteCmd {
         payload: Vec<u8>,
         queue_depth: u32,
     },
-    #[allow(dead_code)]
-    Flush(tokio::sync::oneshot::Sender<std::io::Result<()>>),
-    Close(tokio::sync::oneshot::Sender<std::io::Result<()>>),
 }
 
 pub(crate) struct ActiveReceiveSession {
     pub file_path: PathBuf,
     pub part_path: PathBuf,
-    pub disk_tx: tokio::sync::mpsc::Sender<DiskWriteCmd>,
+    pub disk_tx: async_channel::Sender<DiskWriteCmd>,
     pub disk_error: Arc<Mutex<Option<String>>>,
     pub tracker: Arc<Mutex<InMemoryChunkTracker>>,
     pub chunk_crcs: Arc<Mutex<HashMap<u32, (u32, usize)>>>,
@@ -67,19 +66,21 @@ pub(crate) struct ActiveReceiveSession {
     pub is_sender_in_same_process: bool,
     pub is_ephemeral: bool,
     pub telemetry: Arc<TransferTelemetry>,
+    pub worker_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
-static ACTIVE_RECEIVE_SESSIONS: std::sync::LazyLock<Mutex<HashMap<Uuid, Arc<ActiveReceiveSession>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_RECEIVE_SESSIONS: std::sync::LazyLock<
+    Mutex<HashMap<Uuid, Arc<ActiveReceiveSession>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn get_active_receive_sessions() -> &'static Mutex<HashMap<Uuid, Arc<ActiveReceiveSession>>> {
+pub(crate) fn get_active_receive_sessions(
+) -> &'static Mutex<HashMap<Uuid, Arc<ActiveReceiveSession>>> {
     &ACTIVE_RECEIVE_SESSIONS
 }
 
 pub(crate) fn cancel_receive_session(transfer_id: Uuid) {
     if let Some(s) = get_active_receive_sessions().lock().remove(&transfer_id) {
-        let (reply_tx, _) = tokio::sync::oneshot::channel();
-        let _ = s.disk_tx.try_send(DiskWriteCmd::Close(reply_tx));
+        s.disk_tx.close();
     }
 }
 
@@ -95,14 +96,14 @@ pub async fn enter_receive_mode(
         let listeners = get_receive_listeners().lock();
         let already_active = listeners.contains_key(addr)
             || listeners.keys().any(|existing| {
-                existing == addr
-                    || (existing.ends_with(":9876") && addr.ends_with(":9876"))
+                existing == addr || (existing.ends_with(":9876") && addr.ends_with(":9876"))
             });
         if already_active {
-            log::info!("Receive mode is already active on {}, returning existing listener handle", addr);
-            let handle = crate::util::runtime::spawn_task(async move {
-                Ok(dest_dir)
-            });
+            log::info!(
+                "Receive mode is already active on {}, returning existing listener handle",
+                addr
+            );
+            let handle = crate::util::runtime::spawn_task(async move { Ok(dest_dir) });
             return Ok(handle);
         }
     }
@@ -150,15 +151,26 @@ pub async fn enter_receive_mode(
                     }
                 }
 
-                log::info!("[ReceiveMode] Polling hotspot with target_serial={:?}...", target_serial);
-                if let Some(config) = WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await {
-                    log::info!("[ReceiveMode] Discovered hotspot: SSID='{}', associating Windows WLAN...", config.ssid);
+                log::info!(
+                    "[ReceiveMode] Polling hotspot with target_serial={:?}...",
+                    target_serial
+                );
+                if let Some(config) =
+                    WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await
+                {
+                    log::info!(
+                        "[ReceiveMode] Discovered hotspot: SSID='{}', associating Windows WLAN...",
+                        config.ssid
+                    );
                     #[cfg(target_os = "windows")]
                     {
                         if let Err(e) = WifiDirectTransport::associate_wlan_windows(&config).await {
                             log::warn!("[ReceiveMode] Failed to associate Windows WLAN: {}", e);
                         } else {
-                            log::info!("[ReceiveMode] Successfully associated Windows WLAN with '{}'!", config.ssid);
+                            log::info!(
+                                "[ReceiveMode] Successfully associated Windows WLAN with '{}'!",
+                                config.ssid
+                            );
                         }
                     }
                 } else {
@@ -234,9 +246,12 @@ pub(crate) async fn handle_incoming_receive_transport(
         None => return Ok(()), // EOF / probe
     };
     if peer_hello.protocol_version < MIN_SUPPORTED_PROTOCOL_VERSION {
-        return Err(TransferSessionError::Protocol(crate::protocol::ProtocolError::DeserializationError(
-            format!("Unsupported protocol version: {}", peer_hello.protocol_version),
-        )));
+        return Err(TransferSessionError::Protocol(
+            crate::protocol::ProtocolError::DeserializationError(format!(
+                "Unsupported protocol version: {}",
+                peer_hello.protocol_version
+            )),
+        ));
     }
 
     // Reply Hello
@@ -273,7 +288,10 @@ pub(crate) async fn handle_incoming_receive_transport(
         None,
         None,
         Some(offer.file_size),
-        format!("Received and accepted TransferOffer for '{}' ({} bytes, {} chunks)", offer.file_name, offer.file_size, offer.total_chunks),
+        format!(
+            "Received and accepted TransferOffer for '{}' ({} bytes, {} chunks)",
+            offer.file_name, offer.file_size, offer.total_chunks
+        ),
         None,
     );
 
@@ -285,17 +303,14 @@ pub(crate) async fn handle_incoming_receive_transport(
         } else {
             let is_ephemeral = offer.purpose != crate::benchmark::TransferPurpose::Normal;
             let effective_dest = if is_ephemeral {
-                std::env::temp_dir().join("turbotransfer_bench")
+                default_temp_dir()
             } else {
                 dest_dir.clone()
             };
             std::fs::create_dir_all(&effective_dest)?;
-            let (part_path, final_path) = crate::util::storage::resolve_secure_paths(&effective_dest, &offer.file_name)?;
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&part_path)?;
+            let (part_path, final_path) =
+                crate::util::storage::resolve_secure_paths(&effective_dest, &offer.file_name)?;
+            let file = crate::util::storage::open_sequential_write(&part_path)?;
 
             let t_pre = std::time::Instant::now();
             crate::util::storage::preallocate_file(&file, offer.file_size)?;
@@ -314,7 +329,9 @@ pub(crate) async fn handle_incoming_receive_transport(
 
             let transport_label = match offer.purpose {
                 crate::benchmark::TransferPurpose::Benchmark => "Benchmark (Receiving)".to_string(),
-                crate::benchmark::TransferPurpose::Calibration => "Calibration (Receiving)".to_string(),
+                crate::benchmark::TransferPurpose::Calibration => {
+                    "Calibration (Receiving)".to_string()
+                }
                 crate::benchmark::TransferPurpose::Normal => "Multi-Channel Ingestion".to_string(),
             };
             register_active_transfer(
@@ -329,7 +346,9 @@ pub(crate) async fn handle_incoming_receive_transport(
             let is_sender_in_same_process = {
                 let reg = get_registry();
                 let reg_map = reg.transfers.lock();
-                reg_map.get(&offer.transfer_id).map_or(false, |r| r.role == TransferRole::Sender)
+                reg_map
+                    .get(&offer.transfer_id)
+                    .map_or(false, |r| r.role == TransferRole::Sender)
             };
 
             if !is_sender_in_same_process && !is_ephemeral {
@@ -348,60 +367,201 @@ pub(crate) async fn handle_incoming_receive_transport(
                 set_transfer_actor_handle(offer.transfer_id, actor_handle);
             }
 
+            let (tracker, completed_set) = if !is_ephemeral {
+                if let Some((_, meta)) = find_resumable_transfer(Some(offer.transfer_id)) {
+                    if !meta.completed_ranges.is_empty() {
+                        let mut set = std::collections::HashSet::new();
+                        for &(start, end) in &meta.completed_ranges {
+                            for cid in start..=end {
+                                set.insert(cid);
+                            }
+                        }
+                        (
+                            InMemoryChunkTracker::from_ranges(
+                                offer.transfer_id,
+                                offer.file_id,
+                                &meta.completed_ranges,
+                            ),
+                            set,
+                        )
+                    } else {
+                        (
+                            InMemoryChunkTracker::new(),
+                            std::collections::HashSet::new(),
+                        )
+                    }
+                } else {
+                    (
+                        InMemoryChunkTracker::new(),
+                        std::collections::HashSet::new(),
+                    )
+                }
+            } else {
+                (
+                    InMemoryChunkTracker::new(),
+                    std::collections::HashSet::new(),
+                )
+            };
+
             let disk_error = Arc::new(Mutex::new(None));
             let disk_error_clone = disk_error.clone();
 
-            let (disk_tx, mut disk_rx) = tokio::sync::mpsc::channel::<DiskWriteCmd>(128);
-            let mut writer_file = file;
+            // Bounded disk queue (128 chunks = 256 MiB RAM bound)
+            let (disk_tx, disk_rx) = async_channel::bounded::<DiskWriteCmd>(128);
+            let writer_file = Arc::new(file);
             let tel_for_disk = telemetry.clone();
+            let total_chunks = offer.total_chunks;
 
-            tokio::task::spawn_blocking(move || {
-                use std::io::{Seek, SeekFrom, Write};
-                while let Some(cmd) = disk_rx.blocking_recv() {
+            let rx = disk_rx.clone();
+            let file_ref = writer_file.clone();
+            let tel = tel_for_disk.clone();
+            let err_slot = disk_error_clone.clone();
+
+            // Single dedicated sequential reordering writer thread:
+            // Eliminates Windows NTFS Valid Data Length (VDL) cluster zero-fill locks and random write thrashing
+            let handle = tokio::task::spawn_blocking(move || {
+                let mut next_expected_chunk = 0u32;
+                while next_expected_chunk < total_chunks
+                    && completed_set.contains(&next_expected_chunk)
+                {
+                    next_expected_chunk += 1;
+                }
+
+                let mut pending_chunks: std::collections::BTreeMap<u32, (u64, Vec<u8>)> =
+                    std::collections::BTreeMap::new();
+                const MAX_PENDING_CHUNKS: usize = 128;
+
+                while let Ok(cmd) = rx.recv_blocking() {
                     match cmd {
-                        DiskWriteCmd::Write { chunk_id, file_offset, payload, queue_depth } => {
+                        DiskWriteCmd::Write {
+                            chunk_id,
+                            file_offset,
+                            payload,
+                            queue_depth,
+                        } => {
+                            if chunk_id > next_expected_chunk {
+                                pending_chunks.insert(chunk_id, (file_offset, payload));
+                                // Safety overflow fallback: if reorder buffer exceeds bound (e.g. stalled stream),
+                                // force write the lowest buffered chunk to prevent memory exhaustion and unblock.
+                                if pending_chunks.len() >= MAX_PENDING_CHUNKS {
+                                    if let Some((lowest_id, (offset, p))) =
+                                        pending_chunks.pop_first()
+                                    {
+                                        log::warn!(
+                                            "Sequential reorder buffer reached limit ({} chunks), writing lowest chunk #{} (offset {})",
+                                            pending_chunks.len() + 1,
+                                            lowest_id,
+                                            offset
+                                        );
+                                        let t_w0 = std::time::Instant::now();
+                                        let len = p.len() as u64;
+                                        if let Err(e) = crate::util::storage::write_at_offset(
+                                            &file_ref, offset, &p,
+                                        ) {
+                                            log::error!("Disk write error: {}", e);
+                                            *err_slot.lock() = Some(e.to_string());
+                                            break;
+                                        }
+                                        let write_us = t_w0.elapsed().as_micros() as u64;
+                                        tel.record_disk_write(
+                                            lowest_id,
+                                            len,
+                                            write_us,
+                                            queue_depth,
+                                        );
+                                        next_expected_chunk = lowest_id + 1;
+                                        while next_expected_chunk < total_chunks
+                                            && completed_set.contains(&next_expected_chunk)
+                                        {
+                                            next_expected_chunk += 1;
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if chunk_id < next_expected_chunk {
+                                // Duplicate / already written
+                                continue;
+                            }
+
+                            // chunk_id == next_expected_chunk
                             let t_w0 = std::time::Instant::now();
                             let len = payload.len() as u64;
-                            if let Err(e) = writer_file.seek(SeekFrom::Start(file_offset)).and_then(|_| writer_file.write_all(&payload)) {
-                                log::error!("Background disk write error: {}", e);
-                                *disk_error_clone.lock() = Some(e.to_string());
+                            if let Err(e) = crate::util::storage::write_at_offset(
+                                &file_ref,
+                                file_offset,
+                                &payload,
+                            ) {
+                                log::error!("Sequential disk write error: {}", e);
+                                *err_slot.lock() = Some(e.to_string());
+                                break;
                             }
                             let write_us = t_w0.elapsed().as_micros() as u64;
-                            tel_for_disk.record_disk_write(chunk_id, len, write_us, queue_depth);
-                        }
-                        DiskWriteCmd::Flush(reply_tx) => {
-                            let res = writer_file.flush();
-                            let _ = reply_tx.send(res);
-                        }
-                        DiskWriteCmd::Close(reply_tx) => {
-                            let flush_res = writer_file.flush();
-                            drop(writer_file);
-                            let final_res = if let Some(err_msg) = &*disk_error_clone.lock() {
-                                Err(std::io::Error::new(std::io::ErrorKind::Other, err_msg.clone()))
-                            } else {
-                                flush_res
-                            };
-                            let _ = reply_tx.send(final_res);
-                            break;
+                            tel.record_disk_write(chunk_id, len, write_us, queue_depth);
+                            next_expected_chunk += 1;
+
+                            while next_expected_chunk < total_chunks
+                                && completed_set.contains(&next_expected_chunk)
+                            {
+                                next_expected_chunk += 1;
+                            }
+
+                            // Drain all contiguous pending chunks in ascending order
+                            while let Some((&next_id, _)) =
+                                pending_chunks.range(next_expected_chunk..).next()
+                            {
+                                if next_id == next_expected_chunk {
+                                    let (_, (offset, p)) =
+                                        pending_chunks.remove_entry(&next_id).unwrap();
+                                    let t_drain = std::time::Instant::now();
+                                    let p_len = p.len() as u64;
+                                    if let Err(e) =
+                                        crate::util::storage::write_at_offset(&file_ref, offset, &p)
+                                    {
+                                        log::error!(
+                                            "Sequential disk write error on buffered chunk: {}",
+                                            e
+                                        );
+                                        *err_slot.lock() = Some(e.to_string());
+                                        break;
+                                    }
+                                    let drain_us = t_drain.elapsed().as_micros() as u64;
+                                    tel.record_disk_write(
+                                        next_id,
+                                        p_len,
+                                        drain_us,
+                                        rx.len() as u32,
+                                    );
+                                    next_expected_chunk += 1;
+
+                                    while next_expected_chunk < total_chunks
+                                        && completed_set.contains(&next_expected_chunk)
+                                    {
+                                        next_expected_chunk += 1;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
                         }
                     }
+                }
+
+                // Flush any remaining buffered chunks upon channel close
+                while let Some((cid, (offset, p))) = pending_chunks.pop_first() {
+                    let t_drain = std::time::Instant::now();
+                    let p_len = p.len() as u64;
+                    if let Err(e) = crate::util::storage::write_at_offset(&file_ref, offset, &p) {
+                        log::error!("Flush disk write error on chunk {}: {}", cid, e);
+                        *err_slot.lock() = Some(e.to_string());
+                        break;
+                    }
+                    let drain_us = t_drain.elapsed().as_micros() as u64;
+                    tel.record_disk_write(cid, p_len, drain_us, 0);
                 }
             });
-
-            let tracker = if !is_ephemeral {
-                if let Some((_, meta)) = find_resumable_transfer(Some(offer.transfer_id)) {
-                    if !meta.completed_ranges.is_empty() {
-                        InMemoryChunkTracker::from_ranges(offer.transfer_id, offer.file_id, &meta.completed_ranges)
-                    } else {
-                        InMemoryChunkTracker::new()
-                    }
-                } else {
-                    InMemoryChunkTracker::new()
-                }
-            } else {
-                InMemoryChunkTracker::new()
-            };
-
+            let worker_handles = vec![handle];
             let new_session = Arc::new(ActiveReceiveSession {
                 file_path: final_path,
                 part_path,
@@ -416,6 +576,7 @@ pub(crate) async fn handle_incoming_receive_transport(
                 is_sender_in_same_process,
                 is_ephemeral,
                 telemetry: telemetry.clone(),
+                worker_handles: Arc::new(Mutex::new(worker_handles)),
             });
             map.insert(offer.transfer_id, new_session.clone());
             new_session
@@ -438,20 +599,32 @@ pub(crate) async fn handle_incoming_receive_transport(
         let frame = match frame_res {
             Ok(Some(f)) => f,
             Ok(None) => {
-                let is_done = session.completed_chunks_count.load(Ordering::Relaxed) >= offer.total_chunks;
+                let is_done =
+                    session.completed_chunks_count.load(Ordering::Relaxed) >= offer.total_chunks;
                 if is_done {
-                    debug!("Channel {} closed gracefully after transfer completion", ch_name);
+                    debug!(
+                        "Channel {} closed gracefully after transfer completion",
+                        ch_name
+                    );
                 } else {
-                    session.telemetry.record_channel_disconnect(ch_name, "Peer disconnected / EOF");
+                    session
+                        .telemetry
+                        .record_channel_disconnect(ch_name, "Peer disconnected / EOF");
                 }
                 break;
             }
             Err(e) => {
-                let is_done = session.completed_chunks_count.load(Ordering::Relaxed) >= offer.total_chunks;
+                let is_done =
+                    session.completed_chunks_count.load(Ordering::Relaxed) >= offer.total_chunks;
                 if is_done {
-                    debug!("Channel {} closed after transfer completion: {}", ch_name, e);
+                    debug!(
+                        "Channel {} closed after transfer completion: {}",
+                        ch_name, e
+                    );
                 } else {
-                    session.telemetry.record_channel_disconnect(ch_name, &e.to_string());
+                    session
+                        .telemetry
+                        .record_channel_disconnect(ch_name, &e.to_string());
                 }
                 return Err(TransferSessionError::Transport(e));
             }
@@ -463,7 +636,11 @@ pub(crate) async fn handle_incoming_receive_transport(
                 let verify_us = t_v0.elapsed().as_micros() as u64;
 
                 if computed_checksum != chunk_data.checksum {
-                    session.telemetry.record_chunk_nack(ch_name, chunk_data.chunk_id, "xxHash64 payload mismatch");
+                    session.telemetry.record_chunk_nack(
+                        ch_name,
+                        chunk_data.chunk_id,
+                        "xxHash64 payload mismatch",
+                    );
                     let nack = Message::ChunkNack(ChunkNackData {
                         transfer_id: chunk_data.transfer_id,
                         chunk_id: chunk_data.chunk_id,
@@ -492,12 +669,15 @@ pub(crate) async fn handle_incoming_receive_transport(
                 };
 
                 if is_already_done {
-                    session.telemetry.record_duplicate_chunk(chunk_data.chunk_id);
+                    session
+                        .telemetry
+                        .record_duplicate_chunk(chunk_data.chunk_id);
                     {
                         let mut crc_map = session.chunk_crcs.lock();
                         if !crc_map.contains_key(&chunk_data.chunk_id) {
                             let chunk_crc = crate::checksum::compute_crc32c(&chunk_data.payload);
-                            crc_map.insert(chunk_data.chunk_id, (chunk_crc, chunk_data.payload.len()));
+                            crc_map
+                                .insert(chunk_data.chunk_id, (chunk_crc, chunk_data.payload.len()));
                         }
                     }
                     let ack = Message::ChunkAck(ChunkAckData {
@@ -519,7 +699,10 @@ pub(crate) async fn handle_incoming_receive_transport(
                         chunk_data.chunk_id,
                         chunk_data.checksum,
                     );
-                    session.chunk_crcs.lock().insert(chunk_data.chunk_id, (chunk_crc, payload_len));
+                    session
+                        .chunk_crcs
+                        .lock()
+                        .insert(chunk_data.chunk_id, (chunk_crc, payload_len));
                 }
 
                 let prev_b = session
@@ -529,14 +712,29 @@ pub(crate) async fn handle_incoming_receive_transport(
                     reset_transfer_start_time(chunk_data.transfer_id);
                 }
                 let total_b = prev_b + chunk_data.payload_length as u64;
-                let total_c = session.completed_chunks_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let total_c = session
+                    .completed_chunks_count
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
 
                 if !session.is_sender_in_same_process {
                     update_transfer_progress(chunk_data.transfer_id, total_b, total_c);
-                    record_channel_bytes(chunk_data.transfer_id, is_usb, chunk_data.payload_length as u64);
+                    record_channel_bytes(
+                        chunk_data.transfer_id,
+                        is_usb,
+                        chunk_data.payload_length as u64,
+                    );
                     if let Some(actor) = actor_handle.as_ref() {
-                        let t_type = if is_usb { TransportType::Usb } else { TransportType::WifiDirect };
-                        actor.try_send_chunk_completed(chunk_data.chunk_id, t_type, chunk_data.payload_length as u64);
+                        let t_type = if is_usb {
+                            TransportType::Usb
+                        } else {
+                            TransportType::WifiDirect
+                        };
+                        actor.try_send_chunk_completed(
+                            chunk_data.chunk_id,
+                            t_type,
+                            chunk_data.payload_length as u64,
+                        );
                     }
                 }
 
@@ -547,54 +745,50 @@ pub(crate) async fn handle_incoming_receive_transport(
                     )));
                 }
 
-                // Queue disk write before sending ACK
-                let q_depth = (128 - session.disk_tx.capacity()) as u32;
-                if session.disk_tx.send(DiskWriteCmd::Write {
-                    chunk_id: chunk_data.chunk_id,
-                    file_offset: chunk_data.file_offset,
-                    payload: chunk_data.payload,
-                    queue_depth: q_depth,
-                }).await.is_err() {
-                    return Err(TransferSessionError::Io(std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        "Disk writer task terminated unexpectedly",
-                    )));
-                }
-
-                // Send immediate ChunkAck for 100% universal sender compatibility
+                // 1. Send wire-speed ChunkAck immediately upon memory verification
                 let ack = Message::ChunkAck(ChunkAckData {
                     transfer_id: chunk_data.transfer_id,
                     chunk_id: chunk_data.chunk_id,
                     receiver_verify_us: Some(verify_us as u32),
                 });
                 transport.send_frame(&ack).await?;
+
+                // 2. Queue for sequential disk write (bounded at 128 chunks = 256 MiB RAM bound)
+                let q_depth = session.disk_tx.len() as u32;
+                if session
+                    .disk_tx
+                    .send(DiskWriteCmd::Write {
+                        chunk_id: chunk_data.chunk_id,
+                        file_offset: chunk_data.file_offset,
+                        payload: chunk_data.payload,
+                        queue_depth: q_depth,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return Err(TransferSessionError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "Disk writer task terminated unexpectedly",
+                    )));
+                }
             }
             Message::Complete(complete_data) => {
                 let was_completed = session.is_completed.swap(true, Ordering::SeqCst);
                 if !was_completed {
                     let t_fin0 = std::time::Instant::now();
                     // Close background disk writer and flush/fsync before checking file checksum
-                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    let _ = session.disk_tx.send(DiskWriteCmd::Close(reply_tx)).await;
-                    if let Ok(res) = reply_rx.await {
-                        if let Err(e) = res {
-                            session.telemetry.mark_failed(&format!("Disk flush/fsync error: {}", e));
-                            let data_dir = default_data_dir();
-                            export_and_clean_telemetry(complete_data.transfer_id, &data_dir);
-                            set_transfer_status(
-                                complete_data.transfer_id,
-                                TransferStatus::Failed,
-                                Some(format!("Disk write error: {}", e)),
-                            );
-                            let _ = std::fs::remove_file(&session.part_path);
-                            get_active_receive_sessions()
-                                .lock()
-                                .remove(&complete_data.transfer_id);
-                            return Err(TransferSessionError::Io(e));
-                        }
+                    session.disk_tx.close();
+                    let handles = {
+                        let mut guard = session.worker_handles.lock();
+                        std::mem::take(&mut *guard)
+                    };
+                    for handle in handles {
+                        let _ = handle.await;
                     }
                     if let Some(err) = &*session.disk_error.lock() {
-                        session.telemetry.mark_failed(&format!("Disk write error: {}", err));
+                        session
+                            .telemetry
+                            .mark_failed(&format!("Disk write error: {}", err));
                         let data_dir = default_data_dir();
                         export_and_clean_telemetry(complete_data.transfer_id, &data_dir);
                         set_transfer_status(
@@ -655,12 +849,10 @@ pub(crate) async fn handle_incoming_receive_transport(
                         let _ = std::fs::remove_file(&session.file_path);
                     } else {
                         std::fs::rename(&session.part_path, &session.file_path)?;
-                        let sync_path = session.file_path.clone();
-                        tokio::task::spawn_blocking(move || {
-                            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&sync_path) {
-                                let _ = file.sync_all();
-                            }
-                        });
+                    }
+                    if let Some(actor_handle) = get_transfer_actor_handle(complete_data.transfer_id)
+                    {
+                        actor_handle.complete().await;
                     }
                     set_transfer_status(complete_data.transfer_id, TransferStatus::Completed, None);
 
@@ -693,7 +885,16 @@ pub(crate) async fn handle_incoming_receive_transport(
                 break;
             }
             Message::Pause(pause_data) => {
-                session.telemetry.record_event(TransferStage::Control, EventLevel::Info, "Receiver", None, None, None, "Receiver received Pause", None);
+                session.telemetry.record_event(
+                    TransferStage::Control,
+                    EventLevel::Info,
+                    "Receiver",
+                    None,
+                    None,
+                    None,
+                    "Receiver received Pause",
+                    None,
+                );
                 set_transfer_status(pause_data.transfer_id, TransferStatus::Paused, None);
                 let ack = Message::ChunkAck(ChunkAckData {
                     transfer_id: pause_data.transfer_id,
@@ -703,7 +904,16 @@ pub(crate) async fn handle_incoming_receive_transport(
                 transport.send_frame(&ack).await?;
             }
             Message::Resume(resume_data) => {
-                session.telemetry.record_event(TransferStage::Control, EventLevel::Info, "Receiver", None, None, None, "Receiver received Resume", None);
+                session.telemetry.record_event(
+                    TransferStage::Control,
+                    EventLevel::Info,
+                    "Receiver",
+                    None,
+                    None,
+                    None,
+                    "Receiver received Resume",
+                    None,
+                );
                 set_transfer_status(resume_data.transfer_id, TransferStatus::InProgress, None);
                 let ack = Message::ChunkAck(ChunkAckData {
                     transfer_id: resume_data.transfer_id,
@@ -713,14 +923,28 @@ pub(crate) async fn handle_incoming_receive_transport(
                 transport.send_frame(&ack).await?;
             }
             Message::Cancel(cancel_data) => {
-                session.telemetry.record_event(TransferStage::Control, EventLevel::Info, "Receiver", None, None, None, "Receiver received Cancel", None);
+                session.telemetry.record_event(
+                    TransferStage::Control,
+                    EventLevel::Info,
+                    "Receiver",
+                    None,
+                    None,
+                    None,
+                    "Receiver received Cancel",
+                    None,
+                );
                 session.telemetry.mark_failed("Transfer cancelled by peer");
                 let data_dir = default_data_dir();
                 export_and_clean_telemetry(cancel_data.transfer_id, &data_dir);
                 set_transfer_status(cancel_data.transfer_id, TransferStatus::Cancelled, None);
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                let _ = session.disk_tx.send(DiskWriteCmd::Close(reply_tx)).await;
-                let _ = reply_rx.await;
+                session.disk_tx.close();
+                let handles = {
+                    let mut guard = session.worker_handles.lock();
+                    std::mem::take(&mut *guard)
+                };
+                for handle in handles {
+                    let _ = handle.await;
+                }
                 let _ = std::fs::remove_file(&session.part_path);
                 get_active_receive_sessions()
                     .lock()
@@ -735,7 +959,8 @@ pub(crate) async fn handle_incoming_receive_transport(
     if !session.is_completed.load(Ordering::SeqCst) {
         let should_cleanup = {
             let map = get_active_receive_sessions().lock();
-            map.get(&offer.transfer_id).map_or(true, |s| Arc::strong_count(s) <= 2)
+            map.get(&offer.transfer_id)
+                .map_or(true, |s| Arc::strong_count(s) <= 2)
         };
         if should_cleanup {
             let session_opt = {
@@ -743,12 +968,25 @@ pub(crate) async fn handle_incoming_receive_transport(
                 map.remove(&offer.transfer_id)
             };
             if let Some(s) = session_opt {
-                let (reply_tx, _) = tokio::sync::oneshot::channel();
-                let _ = s.disk_tx.send(DiskWriteCmd::Close(reply_tx)).await;
+                s.disk_tx.close();
+                let handles = {
+                    let mut guard = s.worker_handles.lock();
+                    std::mem::take(&mut *guard)
+                };
+                for handle in handles {
+                    let _ = handle.await;
+                }
             }
             let current_status = transfer_control_status(offer.transfer_id);
-            if current_status != Some(TransferStatus::Paused) && current_status != Some(TransferStatus::Cancelled) && current_status != Some(TransferStatus::Completed) {
-                set_transfer_status(offer.transfer_id, TransferStatus::Failed, Some("Transport connection closed unexpectedly".to_string()));
+            if current_status != Some(TransferStatus::Paused)
+                && current_status != Some(TransferStatus::Cancelled)
+                && current_status != Some(TransferStatus::Completed)
+            {
+                set_transfer_status(
+                    offer.transfer_id,
+                    TransferStatus::Failed,
+                    Some("Transport connection closed unexpectedly".to_string()),
+                );
             }
         }
     }

@@ -6,9 +6,21 @@ use turbotransfer_core::transport::{Transport, TransportStatus};
 #[tokio::test]
 #[ignore]
 async fn test_live_wifi_direct_transport_end_to_end() {
-    let ssid = std::env::var("TT_TEST_SSID").unwrap_or_else(|_| "AndroidShare_2745".to_string());
-    let passphrase = std::env::var("TT_TEST_PASS").unwrap_or_else(|_| "cxh77vh4afjn5g9".to_string());
-    let target_ip = std::env::var("TT_TEST_IP").unwrap_or_else(|_| "10.18.163.130".to_string());
+    let ssid = match std::env::var("TT_TEST_SSID") {
+        Ok(s) => s,
+        Err(_) => {
+            println!("Skipping live Wi-Fi Direct test: TT_TEST_SSID not set");
+            return;
+        }
+    };
+    let passphrase = match std::env::var("TT_TEST_PASS") {
+        Ok(p) => p,
+        Err(_) => {
+            println!("Skipping live Wi-Fi Direct test: TT_TEST_PASS not set");
+            return;
+        }
+    };
+    let target_ip = std::env::var("TT_TEST_IP").unwrap_or_else(|_| "192.168.43.1".to_string());
     let port = 9876;
 
     println!("============================================================");
@@ -27,7 +39,10 @@ async fn test_live_wifi_direct_transport_end_to_end() {
 
     assert_eq!(transport.status(), TransportStatus::Connected);
     assert!(transport.is_connected());
-    println!("[1/5] SUCCESS: Transport connected! Status: {}", transport.status());
+    println!(
+        "[1/5] SUCCESS: Transport connected! Status: {}",
+        transport.status()
+    );
 
     println!("[2/5] Sending 5 Hello messages over 5GHz Wi-Fi...");
     for i in 1..=5 {
@@ -36,8 +51,15 @@ async fn test_live_wifi_direct_transport_end_to_end() {
             device_name: "LiveWifiTest".to_string(),
             protocol_version: i,
         });
-        transport.send_frame(&msg).await.expect("Failed to send frame");
-        println!("  -> Sent Hello frame #{}, Total bytes sent: {}", i, transport.bytes_sent());
+        transport
+            .send_frame(&msg)
+            .await
+            .expect("Failed to send frame");
+        println!(
+            "  -> Sent Hello frame #{}, Total bytes sent: {}",
+            i,
+            transport.bytes_sent()
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(transport.bytes_sent() > 0);
@@ -60,7 +82,10 @@ async fn test_live_wifi_direct_transport_end_to_end() {
     let reconnect_result = transport.reconnect(3).await;
     assert!(reconnect_result.is_ok());
     assert_eq!(transport.status(), TransportStatus::Connected);
-    println!("[5/5] SUCCESS: Transport successfully reconnected! Status: {}", transport.status());
+    println!(
+        "[5/5] SUCCESS: Transport successfully reconnected! Status: {}",
+        transport.status()
+    );
 
     println!("Cleaning up transport and WLAN profile...");
     transport.close().await.expect("Failed to close transport");

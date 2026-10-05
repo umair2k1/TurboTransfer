@@ -39,4 +39,10 @@ open class SettingsRepositoryImpl(
     open fun setReceiveDestDir(dir: String) {
         localDataSource?.setReceiveDestDir(dir)
     }
+
+    open fun isAutoAcceptTransfers(): Boolean = localDataSource?.isAutoAcceptTransfers() ?: false
+
+    open fun setAutoAcceptTransfers(enabled: Boolean) {
+        localDataSource?.setAutoAcceptTransfers(enabled)
+    }
 }

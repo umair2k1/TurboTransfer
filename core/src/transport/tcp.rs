@@ -4,7 +4,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::stream::StreamTransport;
 pub use super::stream::{StreamReadHalf as TcpReadHalf, StreamWriteHalf as TcpWriteHalf};
-use super::{Transport, TransportError, TransportKind, TransportReadHalf, TransportStatus, TransportWriteHalf};
+use super::{
+    Transport, TransportError, TransportKind, TransportReadHalf, TransportStatus,
+    TransportWriteHalf,
+};
 use crate::protocol::Message;
 
 /// Concrete TCP implementation of the `Transport` trait using OS sockets (§8, §9).
@@ -47,7 +50,7 @@ pub fn configure_tcp_stream(stream: &TcpStream) {
 }
 
 impl TcpTransport {
-    /// Connects to a peer over a TCP socket at the specified address (e.g. "192.168.1.19:9876").
+    /// Connects to a peer over a TCP socket at the specified address (e.g. "192.168.43.1:9876").
     pub async fn connect(addr: &str) -> Result<Self, TransportError> {
         let normalized_addr = if !addr.contains(':') {
             format!("{}:9876", addr)

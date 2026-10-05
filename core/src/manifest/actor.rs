@@ -65,6 +65,7 @@ pub enum ActorMessage {
     },
     Pause,
     Cancel,
+    Complete,
     GetMeta(oneshot::Sender<TransferMeta>),
 }
 
@@ -113,6 +114,10 @@ impl MetaActorHandle {
 
     pub async fn cancel(&self) {
         let _ = self.tx.send(ActorMessage::Cancel).await;
+    }
+
+    pub async fn complete(&self) {
+        let _ = self.tx.send(ActorMessage::Complete).await;
     }
 
     pub async fn get_meta(&self) -> Result<TransferMeta, String> {
@@ -295,6 +300,10 @@ impl MetaActor {
             }
             ActorMessage::Cancel => {
                 self.meta.status = TransferStatus::Cancelled;
+                MessageOutcome::Exit
+            }
+            ActorMessage::Complete => {
+                self.meta.status = TransferStatus::Completed;
                 MessageOutcome::Exit
             }
             ActorMessage::GetMeta(reply) => {

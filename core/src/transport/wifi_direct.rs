@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -7,9 +8,11 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use log::{debug, error, info, warn};
 
-use super::{Transport, TransportError, TransportKind, TransportReadHalf, TransportStatus, TransportWriteHalf};
+use super::{
+    Transport, TransportError, TransportKind, TransportReadHalf, TransportStatus,
+    TransportWriteHalf,
+};
 use crate::protocol::{encode_frame_parts, FrameReader, Message};
 
 /// Default heartbeat failure timeout (15s per TRD §9 & implementation prompt 7b).
@@ -25,7 +28,7 @@ pub struct WifiDirectConfig {
     pub ssid: String,
     /// WPA2 passphrase for the AP.
     pub passphrase: String,
-    /// Target IP of the Android device / Gateway (e.g. "10.18.163.130" or "192.168.43.1").
+    /// Target IP of the Android device / Gateway (e.g. "192.168.43.1").
     pub target_ip: String,
     /// TCP listening port on Android (e.g. 9876).
     pub port: u16,
@@ -39,7 +42,12 @@ pub struct WifiDirectConfig {
 
 impl WifiDirectConfig {
     /// Creates a new configuration with standard defaults.
-    pub fn new(ssid: impl Into<String>, passphrase: impl Into<String>, target_ip: impl Into<String>, port: u16) -> Self {
+    pub fn new(
+        ssid: impl Into<String>,
+        passphrase: impl Into<String>,
+        target_ip: impl Into<String>,
+        port: u16,
+    ) -> Self {
         Self {
             ssid: ssid.into(),
             passphrase: passphrase.into(),
@@ -77,7 +85,9 @@ impl WifiDirectTransport {
     ///
     /// On Windows, this associates the wireless adapter to the SSID via native WLAN profiles
     /// and establishes a low-latency TCP socket connection.
-    pub async fn connect(#[allow(unused_mut)] mut config: WifiDirectConfig) -> Result<Self, TransportError> {
+    pub async fn connect(
+        #[allow(unused_mut)] mut config: WifiDirectConfig,
+    ) -> Result<Self, TransportError> {
         info!(
             "Initiating Wi-Fi Direct transport connection to SSID='{}', target={}:{}",
             config.ssid, config.target_ip, config.port
@@ -99,7 +109,10 @@ impl WifiDirectTransport {
         }
 
         let addr = format!("{}:{}", config.target_ip, config.port);
-        debug!("Connecting TCP stream to Android Wi-Fi endpoint at {}", addr);
+        debug!(
+            "Connecting TCP stream to Android Wi-Fi endpoint at {}",
+            addr
+        );
 
         let stream = match TcpStream::connect(&addr).await {
             Ok(s) => {
@@ -107,7 +120,10 @@ impl WifiDirectTransport {
                 s
             }
             Err(e) => {
-                warn!("Initial TCP connect to Wi-Fi endpoint {} failed: {}", addr, e);
+                warn!(
+                    "Initial TCP connect to Wi-Fi endpoint {} failed: {}",
+                    addr, e
+                );
                 return Err(TransportError::Disconnected(format!(
                     "Failed to connect to Wi-Fi endpoint {}: {}",
                     addr, e
@@ -239,7 +255,10 @@ impl WifiDirectTransport {
                     return Ok(());
                 }
                 Err(e) => {
-                    debug!("Reconnection attempt {}/{} failed: {}", attempts, max_attempts, e);
+                    debug!(
+                        "Reconnection attempt {}/{} failed: {}",
+                        attempts, max_attempts, e
+                    );
                     if attempts < max_attempts {
                         tokio::time::sleep(self.config.reconnect_interval).await;
                     }
@@ -258,39 +277,58 @@ impl WifiDirectTransport {
     #[cfg(target_os = "windows")]
     pub async fn probe_hotspot_control_channel(timeout: Duration) -> Option<WifiDirectConfig> {
         use tokio::io::AsyncBufReadExt;
-        let stream = tokio::time::timeout(timeout, TcpStream::connect("127.0.0.1:9875")).await.ok()?.ok()?;
+        let stream = tokio::time::timeout(timeout, TcpStream::connect("127.0.0.1:9875"))
+            .await
+            .ok()?
+            .ok()?;
         let mut reader = tokio::io::BufReader::new(stream);
         let mut line = String::new();
-        let n = tokio::time::timeout(Duration::from_millis(1000), reader.read_line(&mut line)).await.ok()?.ok()?;
-        if n == 0 { return None; }
+        let n = tokio::time::timeout(Duration::from_millis(1000), reader.read_line(&mut line))
+            .await
+            .ok()?
+            .ok()?;
+        if n == 0 {
+            return None;
+        }
         let val: serde_json::Value = serde_json::from_str(&line).ok()?;
         let ssid = val.get("ssid")?.as_str()?;
         let passphrase = val.get("passphrase")?.as_str()?;
-        if ssid.is_empty() { return None; }
-        let ip = val.get("ip").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        if ssid.is_empty() {
+            return None;
+        }
+        let ip = val
+            .get("ip")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let port = val.get("port").and_then(|p| p.as_u64()).unwrap_or(9876) as u16;
         Some(WifiDirectConfig::new(ssid, passphrase, ip, port))
     }
 
     /// Discovers active Android 5 GHz Hotspot credentials via the USB control channel (port 9875).
     /// If Android has not started the hotspot yet, it triggers it via ADB and retries polling.
-    pub async fn discover_android_hotspot(#[allow(unused_variables)] serial: Option<&str>) -> Option<WifiDirectConfig> {
+    pub async fn discover_android_hotspot(
+        #[allow(unused_variables)] serial: Option<&str>,
+    ) -> Option<WifiDirectConfig> {
         #[cfg(target_os = "windows")]
         {
-            if let Some(config) = Self::probe_hotspot_control_channel(Duration::from_millis(150)).await {
-                info!("Instant discovery of active Android Direct Hotspot: SSID='{}'", config.ssid);
+            if let Some(config) =
+                Self::probe_hotspot_control_channel(Duration::from_millis(150)).await
+            {
+                info!(
+                    "Instant discovery of active Android Direct Hotspot: SSID='{}'",
+                    config.ssid
+                );
                 return Some(config);
             }
 
             let target_serial = match serial {
                 Some(s) => Some(s.to_string()),
-                None => {
-                    crate::transport::usb::UsbTransport::list_adb_devices()
-                        .ok()?
-                        .into_iter()
-                        .find(|d| d.state == "device")
-                        .map(|d| d.serial)
-                }
+                None => crate::transport::usb::UsbTransport::list_adb_devices()
+                    .ok()?
+                    .into_iter()
+                    .find(|d| d.state == "device")
+                    .map(|d| d.serial),
             };
 
             if let Some(ser) = &target_serial {
@@ -299,8 +337,13 @@ impl WifiDirectTransport {
             }
 
             for attempt in 1..=20 {
-                if let Some(config) = Self::probe_hotspot_control_channel(Duration::from_millis(500)).await {
-                    info!("Discovered Android Direct Hotspot: SSID='{}', IP='{}:{}'", config.ssid, config.target_ip, config.port);
+                if let Some(config) =
+                    Self::probe_hotspot_control_channel(Duration::from_millis(500)).await
+                {
+                    info!(
+                        "Discovered Android Direct Hotspot: SSID='{}', IP='{}:{}'",
+                        config.ssid, config.target_ip, config.port
+                    );
                     return Some(config);
                 }
                 if attempt < 20 {
@@ -332,7 +375,11 @@ impl WifiDirectTransport {
             .lines()
             .map(str::trim)
             .find(|line| line.parse::<std::net::Ipv4Addr>().is_ok())
-            .ok_or_else(|| TransportError::Other("No active IPv4 default gateway after hotspot association".into()))?;
+            .ok_or_else(|| {
+                TransportError::Other(
+                    "No active IPv4 default gateway after hotspot association".into(),
+                )
+            })?;
         Ok(gateway.to_string())
     }
 
@@ -415,7 +462,13 @@ impl WifiDirectTransport {
 
         // 1. Add profile
         let add_out = Command::new("netsh")
-            .args(["wlan", "add", "profile", &format!("filename={}", temp_str), "user=current"])
+            .args([
+                "wlan",
+                "add",
+                "profile",
+                &format!("filename={}", temp_str),
+                "user=current",
+            ])
             .output();
 
         let _ = std::fs::remove_file(&temp_file);
@@ -423,7 +476,10 @@ impl WifiDirectTransport {
         if let Ok(out) = add_out {
             if !out.status.success() {
                 let err = String::from_utf8_lossy(&out.stdout);
-                return Err(TransportError::Other(format!("netsh add profile failed: {}", err.trim())));
+                return Err(TransportError::Other(format!(
+                    "netsh add profile failed: {}",
+                    err.trim()
+                )));
             }
         }
 
@@ -440,7 +496,10 @@ impl WifiDirectTransport {
         if let Ok(out) = conn_out {
             if !out.status.success() {
                 let err = String::from_utf8_lossy(&out.stdout);
-                return Err(TransportError::Other(format!("netsh connect failed: {}", err.trim())));
+                return Err(TransportError::Other(format!(
+                    "netsh connect failed: {}",
+                    err.trim()
+                )));
             }
         }
         Ok(())
@@ -511,7 +570,12 @@ impl WifiDirectTransport {
         {
             use std::process::Command;
             let _ = Command::new("netsh")
-                .args(["wlan", "connect", &format!("name={}", ssid), &format!("ssid={}", ssid)])
+                .args([
+                    "wlan",
+                    "connect",
+                    &format!("name={}", ssid),
+                    &format!("ssid={}", ssid),
+                ])
                 .output();
             info!("Requested Windows Wi-Fi reconnection to '{}'", ssid);
         }
@@ -529,9 +593,18 @@ impl WifiDirectTransport {
         {
             use std::process::Command;
             let _ = Command::new("netsh")
-                .args(["wlan", "delete", "profile", &format!("name={}", self.config.ssid), &format!("interface={}", self.config.interface_name)])
+                .args([
+                    "wlan",
+                    "delete",
+                    "profile",
+                    &format!("name={}", self.config.ssid),
+                    &format!("interface={}", self.config.interface_name),
+                ])
                 .output();
-            debug!("Cleaned up temporary WLAN profile '{}' via netsh", self.config.ssid);
+            debug!(
+                "Cleaned up temporary WLAN profile '{}' via netsh",
+                self.config.ssid
+            );
         }
     }
 }
@@ -578,7 +651,10 @@ impl Transport for WifiDirectTransport {
 
         if let Err(e) = super::vectored::write_all_vectored(writer, &header, payload).await {
             self.status = TransportStatus::Disconnected;
-            error!("Wi-Fi Direct socket write error -> marked Disconnected: {}", e);
+            error!(
+                "Wi-Fi Direct socket write error -> marked Disconnected: {}",
+                e
+            );
             return Err(TransportError::Disconnected(format!(
                 "Wi-Fi Direct socket write failed: {}",
                 e
@@ -590,7 +666,10 @@ impl Transport for WifiDirectTransport {
         ) {
             if let Err(e) = writer.flush().await {
                 self.status = TransportStatus::Disconnected;
-                error!("Wi-Fi Direct socket flush error -> marked Disconnected: {}", e);
+                error!(
+                    "Wi-Fi Direct socket flush error -> marked Disconnected: {}",
+                    e
+                );
                 return Err(TransportError::Disconnected(format!(
                     "Wi-Fi Direct socket flush failed: {}",
                     e
@@ -621,7 +700,8 @@ impl Transport for WifiDirectTransport {
                     *last = Instant::now();
                 }
 
-                self.bytes_received.fetch_add(frame_len as u64, Ordering::Relaxed);
+                self.bytes_received
+                    .fetch_add(frame_len as u64, Ordering::Relaxed);
                 Ok(Some(msg))
             }
             Ok(None) => {
@@ -631,7 +711,10 @@ impl Transport for WifiDirectTransport {
             }
             Err(e) => {
                 self.status = TransportStatus::Disconnected;
-                warn!("Wi-Fi Direct read frame error -> marked Disconnected: {}", e);
+                warn!(
+                    "Wi-Fi Direct read frame error -> marked Disconnected: {}",
+                    e
+                );
                 Err(TransportError::from(e))
             }
         }
@@ -692,7 +775,10 @@ impl TransportWriteHalf for WifiDirectWriteHalf {
 
         if let Err(e) = super::vectored::write_all_vectored(writer, &header, payload).await {
             self.status.store(false, Ordering::Relaxed);
-            error!("Wi-Fi Direct socket write error -> marked Disconnected: {}", e);
+            error!(
+                "Wi-Fi Direct socket write error -> marked Disconnected: {}",
+                e
+            );
             return Err(TransportError::Disconnected(format!(
                 "Wi-Fi Direct socket write failed: {}",
                 e
@@ -705,7 +791,10 @@ impl TransportWriteHalf for WifiDirectWriteHalf {
         ) {
             if let Err(e) = writer.flush().await {
                 self.status.store(false, Ordering::Relaxed);
-                error!("Wi-Fi Direct socket flush error -> marked Disconnected: {}", e);
+                error!(
+                    "Wi-Fi Direct socket flush error -> marked Disconnected: {}",
+                    e
+                );
                 return Err(TransportError::Disconnected(format!(
                     "Wi-Fi Direct socket flush failed: {}",
                     e
@@ -757,7 +846,8 @@ impl TransportReadHalf for WifiDirectReadHalf {
                     let mut last = self.last_frame_received.lock().await;
                     *last = Instant::now();
                 }
-                self.bytes_received.fetch_add(frame_len as u64, Ordering::Relaxed);
+                self.bytes_received
+                    .fetch_add(frame_len as u64, Ordering::Relaxed);
                 Ok(Some(msg))
             }
             Ok(None) => {

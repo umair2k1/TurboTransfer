@@ -1,4 +1,4 @@
-use std::fs::{rename, OpenOptions};
+use std::fs::rename;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -11,8 +11,8 @@ use ack::handle_multipath_ack_frame;
 use reader::{spawn_chunk_reader, PreparedChunk};
 
 use super::api::{
-    default_data_dir, register_active_transfer, set_transfer_status, transfer_control_status,
-    update_transfer_progress,
+    default_data_dir, get_transfer_actor_handle, register_active_transfer, set_transfer_status,
+    transfer_control_status, update_transfer_progress,
 };
 use super::tracker::ChunkTracker;
 use crate::benchmark::{TransferPurpose, WindowPreset};
@@ -20,9 +20,9 @@ use crate::checksum::{compute_file_crc32c, compute_xxhash64};
 use crate::chunk::calculate_chunk_plan;
 use crate::manifest::{generate_manifest_with_name, TransferRole, TransferStatus};
 use crate::protocol::{
-    encode_frame, ChunkAckData, ChunkDataPayload, CompleteData, HelloData, Message,
-    ProtocolError, TransferAcceptData, TransferOfferData,
-    CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+    encode_frame, ChunkAckData, ChunkDataPayload, CompleteData, HelloData, Message, ProtocolError,
+    TransferAcceptData, TransferOfferData, CURRENT_PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
 };
 use crate::scheduler::{
     ChannelPerformanceModel, ChannelTracker, WindowController, USB_INITIAL_WINDOW,
@@ -173,9 +173,9 @@ pub async fn send_file_session_multipath_ext(
     options: SessionOptions,
 ) -> Result<(), TransferSessionError> {
     if transports.is_empty() {
-        return Err(TransferSessionError::Transport(TransportError::Disconnected(
-            "No active transports provided for transfer".into(),
-        )));
+        return Err(TransferSessionError::Transport(
+            TransportError::Disconnected("No active transports provided for transfer".into()),
+        ));
     }
 
     let manifest = generate_manifest_with_name(file_path, chunk_size, custom_file_name)?;
@@ -219,10 +219,9 @@ pub async fn send_file_session_multipath_ext(
             });
             transport.send_frame(&hello).await?;
 
-            let peer_hello = transport
-                .receive_frame()
-                .await?
-                .ok_or_else(|| TransferSessionError::UnexpectedMessage("EOF during Hello".into()))?;
+            let peer_hello = transport.receive_frame().await?.ok_or_else(|| {
+                TransferSessionError::UnexpectedMessage("EOF during Hello".into())
+            })?;
             let peer_version = match peer_hello {
                 Message::Hello(h) => h.protocol_version,
                 other => {
@@ -233,9 +232,12 @@ pub async fn send_file_session_multipath_ext(
                 }
             };
             if peer_version < MIN_SUPPORTED_PROTOCOL_VERSION {
-                return Err(TransferSessionError::Protocol(ProtocolError::DeserializationError(
-                    format!("Unsupported protocol version: {}", peer_version),
-                )));
+                return Err(TransferSessionError::Protocol(
+                    ProtocolError::DeserializationError(format!(
+                        "Unsupported protocol version: {}",
+                        peer_version
+                    )),
+                ));
             }
             if options.purpose != TransferPurpose::Normal && peer_version < 2 {
                 return Err(TransferSessionError::Rejected(format!(
@@ -256,14 +258,15 @@ pub async fn send_file_session_multipath_ext(
             });
             transport.send_frame(&offer).await?;
 
-            let response = transport
-                .receive_frame()
-                .await?
-                .ok_or_else(|| TransferSessionError::UnexpectedMessage("EOF during Offer response".into()))?;
+            let response = transport.receive_frame().await?.ok_or_else(|| {
+                TransferSessionError::UnexpectedMessage("EOF during Offer response".into())
+            })?;
 
             match response {
                 Message::TransferAccept(accept) => Ok(accept.resume_from),
-                Message::TransferReject(reject) => Err(TransferSessionError::Rejected(reject.reason)),
+                Message::TransferReject(reject) => {
+                    Err(TransferSessionError::Rejected(reject.reason))
+                }
                 other => Err(TransferSessionError::UnexpectedMessage(format!(
                     "Expected Accept or Reject, got {:?}",
                     other
@@ -296,7 +299,12 @@ pub async fn send_file_session_multipath_ext(
                     None,
                     None,
                     None,
-                    format!("Channel-{} ({}) handshake rejected: {}", idx + 1, ch_name, reason),
+                    format!(
+                        "Channel-{} ({}) handshake rejected: {}",
+                        idx + 1,
+                        ch_name,
+                        reason
+                    ),
                     None,
                 );
                 return Err(TransferSessionError::Rejected(reason));
@@ -317,12 +325,7 @@ pub async fn send_file_session_multipath_ext(
                     ),
                     None,
                 );
-                log::warn!(
-                    "Channel-{} ({}) handshake failed: {}",
-                    idx + 1,
-                    ch_name,
-                    e
-                );
+                log::warn!("Channel-{} ({}) handshake failed: {}", idx + 1, ch_name, e);
                 failed_indices.push(idx);
             }
         }
@@ -333,9 +336,9 @@ pub async fn send_file_session_multipath_ext(
     }
 
     if transports.is_empty() {
-        return Err(TransferSessionError::Transport(TransportError::Disconnected(
-            "All candidate transport handshakes failed".into(),
-        )));
+        return Err(TransferSessionError::Transport(
+            TransportError::Disconnected("All candidate transport handshakes failed".into()),
+        ));
     }
 
     // 2. Filter already transferred chunks (cold resume)
@@ -372,7 +375,11 @@ pub async fn send_file_session_multipath_ext(
         }
     }
 
-    update_transfer_progress(transfer_id, bytes_sent_total_init, completed_chunks_count_init);
+    update_transfer_progress(
+        transfer_id,
+        bytes_sent_total_init,
+        completed_chunks_count_init,
+    );
 
     let total_chunks_needed = initial_chunks_to_send.len();
     if total_chunks_needed == 0 {
@@ -383,11 +390,9 @@ pub async fn send_file_session_multipath_ext(
             file_checksum,
         });
         transports[0].0.send_frame(&complete_msg).await?;
-        let final_frame = transports[0]
-            .0
-            .receive_frame()
-            .await?
-            .ok_or_else(|| TransferSessionError::UnexpectedMessage("EOF waiting for completion ACK".into()))?;
+        let final_frame = transports[0].0.receive_frame().await?.ok_or_else(|| {
+            TransferSessionError::UnexpectedMessage("EOF waiting for completion ACK".into())
+        })?;
         if !matches!(final_frame, Message::ChunkAck(_)) {
             return Err(TransferSessionError::UnexpectedMessage(format!(
                 "Expected final Ack, got {:?}",
@@ -403,7 +408,6 @@ pub async fn send_file_session_multipath_ext(
     }
     // Anchor transfer timing to the exact moment chunk streaming begins
     crate::transfer::api::reset_transfer_start_time(transfer_id);
-
 
     let (prepared_tx, prepared_rx) = async_channel::bounded::<PreparedChunk>(256);
     let (retry_tx, retry_rx) = std::sync::mpsc::channel::<crate::chunk::ChunkPlanEntry>();
@@ -442,8 +446,9 @@ pub async fn send_file_session_multipath_ext(
     ));
     let shared_bytes_sent =
         std::sync::Arc::new(std::sync::atomic::AtomicU64::new(bytes_sent_total_init));
-    let shared_chunks_done =
-        std::sync::Arc::new(std::sync::atomic::AtomicU32::new(completed_chunks_count_init));
+    let shared_chunks_done = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+        completed_chunks_count_init,
+    ));
     let shared_plan_map = std::sync::Arc::new(plan_map);
 
     let mut worker_handles = Vec::new();
@@ -487,11 +492,12 @@ pub async fn send_file_session_multipath_ext(
                 WIFI_INITIAL_WINDOW
             };
             let current_window = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(init_win));
-            let in_flight_times = std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::<u32, std::time::Instant>::new(),
-            ));
-            let last_socket_send_us =
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+            let in_flight_times =
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::<
+                    u32,
+                    std::time::Instant,
+                >::new()));
+            let last_socket_send_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
             let channel_notify = std::sync::Arc::new(tokio::sync::Notify::new());
             let channel_disconnected =
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -520,7 +526,8 @@ pub async fn send_file_session_multipath_ext(
                     loop {
                         if cancelled.load(std::sync::atomic::Ordering::Relaxed)
                             || channel_disconnected.load(std::sync::atomic::Ordering::Relaxed)
-                            || completed_count.load(std::sync::atomic::Ordering::Relaxed) >= total_chunks
+                            || completed_count.load(std::sync::atomic::Ordering::Relaxed)
+                                >= total_chunks
                         {
                             break;
                         }
@@ -528,7 +535,8 @@ pub async fn send_file_session_multipath_ext(
                         match transfer_control_status(transfer_id) {
                             Some(TransferStatus::Paused) => {
                                 cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                                channel_disconnected.store(true, std::sync::atomic::Ordering::Relaxed);
+                                channel_disconnected
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                                 prepared_rx.close();
                                 channel_notify.notify_waiters();
                                 global_notify.notify_waiters();
@@ -548,7 +556,8 @@ pub async fn send_file_session_multipath_ext(
                             }
                             Some(TransferStatus::Cancelled) => {
                                 cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                                channel_disconnected.store(true, std::sync::atomic::Ordering::Relaxed);
+                                channel_disconnected
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                                 prepared_rx.close();
                                 channel_notify.notify_waiters();
                                 global_notify.notify_waiters();
@@ -690,7 +699,9 @@ pub async fn send_file_session_multipath_ext(
                         if channel_disconnected.load(std::sync::atomic::Ordering::Relaxed) {
                             break;
                         }
-                        if completed_count.load(std::sync::atomic::Ordering::Relaxed) >= total_chunks {
+                        if completed_count.load(std::sync::atomic::Ordering::Relaxed)
+                            >= total_chunks
+                        {
                             break;
                         }
                         if cancelled.load(std::sync::atomic::Ordering::Relaxed)
@@ -791,9 +802,9 @@ pub async fn send_file_session_multipath_ext(
                 }
                 (Ok(Err(e)), _) => Err(e),
                 (_, Ok(Err(e))) => Err(e),
-                _ => Err(TransferSessionError::Transport(TransportError::Disconnected(
-                    "Worker task aborted".into(),
-                ))),
+                _ => Err(TransferSessionError::Transport(
+                    TransportError::Disconnected("Worker task aborted".into()),
+                )),
             }
         });
 
@@ -835,20 +846,23 @@ pub async fn send_file_session_multipath_ext(
         telemetry.mark_failed("All transports disconnected before completing transfer");
         let data_dir = default_data_dir();
         export_and_clean_telemetry(transfer_id, &data_dir);
-        return Err(TransferSessionError::Transport(TransportError::Disconnected(
-            "All transports disconnected before completing transfer".into(),
-        )));
+        return Err(TransferSessionError::Transport(
+            TransportError::Disconnected(
+                "All transports disconnected before completing transfer".into(),
+            ),
+        ));
     }
 
     // 3. Complete transfer on the first surviving transport
-    let (mut primary_writer, mut primary_reader) = returned_transports.into_iter().next().ok_or_else(|| {
-        telemetry.mark_failed("No surviving transport available to send Complete message");
-        let data_dir = default_data_dir();
-        export_and_clean_telemetry(transfer_id, &data_dir);
-        TransferSessionError::Transport(TransportError::Disconnected(
-            "All transports disconnected before completion finalization could be sent".into(),
-        ))
-    })?;
+    let (mut primary_writer, mut primary_reader) =
+        returned_transports.into_iter().next().ok_or_else(|| {
+            telemetry.mark_failed("No surviving transport available to send Complete message");
+            let data_dir = default_data_dir();
+            export_and_clean_telemetry(transfer_id, &data_dir);
+            TransferSessionError::Transport(TransportError::Disconnected(
+                "All transports disconnected before completion finalization could be sent".into(),
+            ))
+        })?;
 
     let t_fin0 = std::time::Instant::now();
     let file_checksum = match running_crc_rx.await {
@@ -861,10 +875,9 @@ pub async fn send_file_session_multipath_ext(
     });
     primary_writer.send_frame(&complete_msg).await?;
     loop {
-        let final_frame = primary_reader
-            .receive_frame()
-            .await?
-            .ok_or_else(|| TransferSessionError::UnexpectedMessage("EOF waiting for completion ACK".into()))?;
+        let final_frame = primary_reader.receive_frame().await?.ok_or_else(|| {
+            TransferSessionError::UnexpectedMessage("EOF waiting for completion ACK".into())
+        })?;
         match final_frame {
             Message::ChunkAck(ack) if ack.chunk_id == u32::MAX => break,
             Message::ChunkAck(_) | Message::BatchChunkAck(_) => continue,
@@ -925,12 +938,13 @@ where
     T: Transport,
 {
     // 1. Await Sender Hello
-    let sender_hello = transport
-        .receive_frame()
-        .await?
-        .ok_or(TransferSessionError::UnexpectedMessage(
-            "EOF waiting for Hello".into(),
-        ))?;
+    let sender_hello =
+        transport
+            .receive_frame()
+            .await?
+            .ok_or(TransferSessionError::UnexpectedMessage(
+                "EOF waiting for Hello".into(),
+            ))?;
     let sender_version = match sender_hello {
         Message::Hello(h) => h.protocol_version,
         other => {
@@ -941,9 +955,12 @@ where
         }
     };
     if sender_version < MIN_SUPPORTED_PROTOCOL_VERSION {
-        return Err(TransferSessionError::Protocol(ProtocolError::DeserializationError(
-            format!("Unsupported protocol version: {}", sender_version),
-        )));
+        return Err(TransferSessionError::Protocol(
+            ProtocolError::DeserializationError(format!(
+                "Unsupported protocol version: {}",
+                sender_version
+            )),
+        ));
     }
 
     // 2. Send Receiver Hello
@@ -953,12 +970,13 @@ where
         protocol_version: CURRENT_PROTOCOL_VERSION,
     });
     transport.send_frame(&hello).await?;
-    let offer_msg = transport
-        .receive_frame()
-        .await?
-        .ok_or(TransferSessionError::UnexpectedMessage(
-            "EOF waiting for TransferOffer".into(),
-        ))?;
+    let offer_msg =
+        transport
+            .receive_frame()
+            .await?
+            .ok_or(TransferSessionError::UnexpectedMessage(
+                "EOF waiting for TransferOffer".into(),
+            ))?;
 
     let offer = match offer_msg {
         Message::TransferOffer(o) => o,
@@ -997,16 +1015,14 @@ where
 
     // 5. Create and pre-allocate .part file, keeping handle open for the entire session
     std::fs::create_dir_all(dest_dir)?;
-    let (part_path, final_path) = crate::util::storage::resolve_secure_paths(dest_dir, &offer.file_name)?;
+    let (part_path, final_path) =
+        crate::util::storage::resolve_secure_paths(dest_dir, &offer.file_name)?;
 
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&part_path)?;
+    let mut file = crate::util::storage::open_sequential_write(&part_path)?;
     crate::util::storage::preallocate_file(&file, offer.file_size)?;
 
-    let mut chunk_crcs: std::collections::HashMap<u32, (u32, usize)> = std::collections::HashMap::new();
+    let mut chunk_crcs: std::collections::HashMap<u32, (u32, usize)> =
+        std::collections::HashMap::new();
 
     // Pre-calculate CRC for resumed chunks from open file handle directly
     if let Some(ranges) = &resume_from {
@@ -1054,7 +1070,11 @@ where
                 let verify_us = t_v0.elapsed().as_micros() as u64;
 
                 if computed != chunk_data.checksum {
-                    telemetry.record_chunk_nack("Receiver", chunk_data.chunk_id, "xxHash64 payload mismatch");
+                    telemetry.record_chunk_nack(
+                        "Receiver",
+                        chunk_data.chunk_id,
+                        "xxHash64 payload mismatch",
+                    );
                     let nack = Message::ChunkNack(crate::protocol::ChunkNackData {
                         transfer_id: chunk_data.transfer_id,
                         chunk_id: chunk_data.chunk_id,
@@ -1161,6 +1181,9 @@ where
                 }
 
                 rename(&part_path, &final_path)?;
+                if let Some(actor_handle) = get_transfer_actor_handle(complete_data.transfer_id) {
+                    actor_handle.complete().await;
+                }
                 set_transfer_status(complete_data.transfer_id, TransferStatus::Completed, None);
 
                 let fin_ms = t_fin0.elapsed().as_millis() as u64;

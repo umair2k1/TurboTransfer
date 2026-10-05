@@ -49,6 +49,33 @@ pub fn open_sequential_read<P: AsRef<Path>>(path: P) -> std::io::Result<File> {
     }
 }
 
+/// Opens a file for high-throughput sequential writing with platform-optimized kernel flags.
+///
+/// On Windows, sets `FILE_FLAG_SEQUENTIAL_SCAN` (0x08000000) to inform the Windows Cache Manager
+/// to optimize dirty page flushes and writebacks for sequential streaming.
+/// On Linux/Android, opens the file with read/write/create.
+pub fn open_sequential_write<P: AsRef<Path>>(path: P) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x08000000;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(path.as_ref())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path.as_ref())
+    }
+}
+
 pub fn preallocate_file(file: &File, file_size: u64) -> std::io::Result<()> {
     // Always set logical size first — required for read_exact / file cursor operations to work
     file.set_len(file_size)?;
@@ -58,15 +85,78 @@ pub fn preallocate_file(file: &File, file_size: u64) -> std::io::Result<()> {
         use std::os::unix::io::AsRawFd;
         let fd = file.as_raw_fd();
         // Advisory: pre-allocate contiguous blocks to avoid fragmentation and random write stalls
-        let ret = unsafe {
-            libc::posix_fallocate(fd, 0, file_size as libc::off_t)
-        };
+        let ret = unsafe { libc::posix_fallocate(fd, 0, file_size as libc::off_t) };
         if ret != 0 && ret != libc::EOPNOTSUPP && ret != libc::EINVAL {
             return Err(std::io::Error::from_raw_os_error(ret));
         }
     }
 
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        #[repr(C)]
+        struct FILE_ALLOCATION_INFO {
+            allocation_size: i64,
+        }
+        extern "system" {
+            fn SetFileInformationByHandle(
+                h_file: *mut std::ffi::c_void,
+                file_information_class: i32,
+                lp_file_information: *const std::ffi::c_void,
+                dw_buffer_size: u32,
+            ) -> i32;
+        }
+        const FILE_ALLOCATION_INFO_CLASS: i32 = 5;
+        let info = FILE_ALLOCATION_INFO {
+            allocation_size: file_size as i64,
+        };
+        unsafe {
+            let res = SetFileInformationByHandle(
+                file.as_raw_handle() as _,
+                FILE_ALLOCATION_INFO_CLASS,
+                &info as *const _ as _,
+                std::mem::size_of::<FILE_ALLOCATION_INFO>() as u32,
+            );
+            if res == 0 {
+                log::debug!(
+                    "Advisory FILE_ALLOCATION_INFO call returned 0: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+/// Writes bytes at a specific 64-bit file offset using atomic positional I/O without seeking.
+///
+/// On Windows, leverages `FileExt::seek_write` (`WriteFile` with `OVERLAPPED` offset) to write
+/// concurrently across multiple threads without locking or altering the file pointer.
+/// On POSIX / Linux / Android, uses `FileExt::write_all_at` (`pwrite`).
+pub fn write_at_offset(file: &File, offset: u64, buf: &[u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut curr_offset = offset;
+        let mut remaining = buf;
+        while !remaining.is_empty() {
+            let written = file.seek_write(remaining, curr_offset)?;
+            if written == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            remaining = &remaining[written..];
+            curr_offset += written as u64;
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
 }
 
 /// Sanitizes an untrusted incoming filename to prevent path traversal (TRD §12, C1).
@@ -111,7 +201,10 @@ pub fn resolve_secure_paths<P: AsRef<Path>>(
     if !part_path.starts_with(dest) || !final_path.starts_with(dest) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("Path traversal attempt detected in filename: {:?}", file_name),
+            format!(
+                "Path traversal attempt detected in filename: {:?}",
+                file_name
+            ),
         ));
     }
 
@@ -141,7 +234,10 @@ mod tests {
     #[test]
     fn test_sanitize_filename_traversal_prevention() {
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
-        assert_eq!(sanitize_filename("..\\..\\Windows\\System32\\cmd.exe"), "cmd.exe");
+        assert_eq!(
+            sanitize_filename("..\\..\\Windows\\System32\\cmd.exe"),
+            "cmd.exe"
+        );
         assert_eq!(sanitize_filename("/var/log/syslog"), "syslog");
         assert_eq!(sanitize_filename("C:\\Users\\Admin\\evil.bat"), "evil.bat");
         assert_eq!(sanitize_filename("..."), "download_unnamed");

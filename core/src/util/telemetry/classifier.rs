@@ -160,8 +160,14 @@ pub fn generate_bottleneck_report(telemetry: &TransferTelemetry) -> BottleneckRe
     } else {
         let total_disconnects: u64 = channel_metrics.iter().map(|c| c.disconnect_count).sum();
         let total_nacks: u64 = channel_metrics.iter().map(|c| c.nack_count).sum();
-        let max_rtt_avg: f64 = channel_metrics.iter().map(|c| c.avg_rtt_ms).fold(0.0, f64::max);
-        let max_rtt_p95: f64 = channel_metrics.iter().map(|c| c.p95_rtt_ms).fold(0.0, f64::max);
+        let max_rtt_avg: f64 = channel_metrics
+            .iter()
+            .map(|c| c.avg_rtt_ms)
+            .fold(0.0, f64::max);
+        let max_rtt_p95: f64 = channel_metrics
+            .iter()
+            .map(|c| c.p95_rtt_ms)
+            .fold(0.0, f64::max);
 
         if total_disconnects > 0 || total_nacks > 3 {
             primary_bottleneck = "NETWORK_PACKET_CORRUPTION_OR_DROP".to_string();
@@ -172,11 +178,23 @@ pub fn generate_bottleneck_report(telemetry: &TransferTelemetry) -> BottleneckRe
         } else if total_nacks > 0
             || ((max_rtt_avg > 600.0 || max_rtt_p95 > 1000.0) && avg_throughput_mbps < 70.0)
         {
-            primary_bottleneck = "NETWORK_LATENCY_JITTER".to_string();
-            recommendations.push(format!(
-                "Network latency or jitter detected (Avg RTT: {:.1} ms, P95: {:.1} ms, NACKs: {}). Round-trip latency is constraining sliding window pipeline efficiency.",
-                max_rtt_avg, max_rtt_p95, total_nacks
-            ));
+            let max_socket_write_avg_us: f64 = channel_metrics
+                .iter()
+                .map(|c| c.avg_socket_write_us)
+                .fold(0.0, f64::max);
+            if max_socket_write_avg_us > 100_000.0 {
+                primary_bottleneck = "RECEIVER_FLOW_CONTROL_BACKPRESSURE".to_string();
+                recommendations.push(format!(
+                    "Receiver flow control backpressure detected (Sender socket write avg: {:.1} ms, RTT avg: {:.1} ms). Receiver TCP window or queue depth constrained transmission.",
+                    max_socket_write_avg_us / 1000.0, max_rtt_avg
+                ));
+            } else {
+                primary_bottleneck = "NETWORK_LATENCY_JITTER".to_string();
+                recommendations.push(format!(
+                    "Network latency or jitter detected (Avg RTT: {:.1} ms, P95: {:.1} ms, NACKs: {}). Round-trip latency is constraining sliding window pipeline efficiency.",
+                    max_rtt_avg, max_rtt_p95, total_nacks
+                ));
+            }
         } else if hash_avg_us > 25_000.0 && sender_checksum_mbps < 200.0 {
             primary_bottleneck = "CPU_CHECKSUM_BOTTLENECK".to_string();
             recommendations.push(format!(

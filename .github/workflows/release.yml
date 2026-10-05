@@ -216,23 +216,8 @@ jobs:
               aligned-release.apk
             rm -f release.jks
           else
-            echo "No custom keystore secrets found. Signing with auto-generated release keystore for instant installability..."
-            keytool -genkey -v -keystore release.jks \
-              -alias turbotransfer \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass turbotransfer \
-              -keypass turbotransfer \
-              -dname "CN=TurboTransfer, OU=TurboTransfer, O=TurboTransfer, L=San Francisco, S=CA, C=US"
-            
-            $APKSIGNER sign --ks release.jks \
-              --ks-pass pass:turbotransfer \
-              --ks-key-alias turbotransfer \
-              --key-pass pass:turbotransfer \
-              --out ../turbotransfer-android.apk \
-              aligned-release.apk
-            rm -f release.jks
+            echo "::error::Release signing secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS) are missing. Refusing to sign with transient keystore that breaks in-place updates."
+            exit 1
           fi
           
           # Verify signature

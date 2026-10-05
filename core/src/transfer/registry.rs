@@ -90,7 +90,9 @@ pub fn update_transfer_progress(transfer_id: Uuid, bytes: u64, chunks_done: u32)
     let map = registry.transfers.lock();
     if let Some(record) = map.get(&transfer_id) {
         record.bytes_transferred.store(bytes, Ordering::Relaxed);
-        record.completed_chunks.store(chunks_done, Ordering::Relaxed);
+        record
+            .completed_chunks
+            .store(chunks_done, Ordering::Relaxed);
     }
 }
 
@@ -100,9 +102,13 @@ pub fn record_channel_bytes(transfer_id: Uuid, is_usb: bool, bytes: u64) {
     let map = registry.transfers.lock();
     if let Some(record) = map.get(&transfer_id) {
         if is_usb {
-            record.usb_bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
+            record
+                .usb_bytes_transferred
+                .fetch_add(bytes, Ordering::Relaxed);
         } else {
-            record.wifi_bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
+            record
+                .wifi_bytes_transferred
+                .fetch_add(bytes, Ordering::Relaxed);
         }
     }
 }
@@ -154,7 +160,8 @@ pub fn transfer_control_status(transfer_id: Uuid) -> Option<TransferStatus> {
 pub fn get_transfer_error(transfer_id: Uuid) -> Option<String> {
     let registry = get_registry();
     let map = registry.transfers.lock();
-    map.get(&transfer_id).and_then(|record| record.last_error.lock().clone())
+    map.get(&transfer_id)
+        .and_then(|record| record.last_error.lock().clone())
 }
 
 /// Registers an active transfer in the global registry.
@@ -201,8 +208,12 @@ pub fn register_active_transfer_with_path(
             existing.source_file_path = source_file_path.clone();
         }
         if initial_bytes > 0 {
-            existing.bytes_transferred.store(initial_bytes, Ordering::Relaxed);
-            existing.completed_chunks.store(initial_chunks, Ordering::Relaxed);
+            existing
+                .bytes_transferred
+                .store(initial_bytes, Ordering::Relaxed);
+            existing
+                .completed_chunks
+                .store(initial_chunks, Ordering::Relaxed);
             *existing.last_sample_bytes.lock() = initial_bytes;
         }
         *existing.status.lock() = TransferStatus::InProgress;
@@ -291,7 +302,8 @@ pub fn set_transfer_actor_handle(transfer_id: Uuid, handle: MetaActorHandle) {
 pub fn get_transfer_actor_handle(transfer_id: Uuid) -> Option<MetaActorHandle> {
     let registry = get_registry();
     let map = registry.transfers.lock();
-    map.get(&transfer_id).and_then(|record| record.actor_handle.clone())
+    map.get(&transfer_id)
+        .and_then(|record| record.actor_handle.clone())
 }
 
 /// Updates the transport name of an active transfer.
@@ -372,18 +384,36 @@ pub fn get_progress(transfer_id: Uuid) -> Option<TransferProgress> {
             let inst_wifi_bps = delta_wifi / delta_t;
 
             let elapsed = now.duration_since(record.start_time).as_secs_f64();
-            let session_avg_bps = if elapsed > 0.2 { (bytes as f64) / elapsed } else { inst_bps };
-
-            // Smooth instantaneous measurement and bound against session average to prevent chunk-completion spikes
-            let bounded_inst = if session_avg_bps > 0.0 && bytes > 0 {
-                inst_bps.min(session_avg_bps * 1.6).max(session_avg_bps * 0.4)
+            let session_avg_bps = if elapsed > 0.2 {
+                (bytes as f64) / elapsed
             } else {
                 inst_bps
             };
 
-            *rolling = if *rolling == 0.0 { bounded_inst } else { *rolling * 0.70 + bounded_inst * 0.30 };
-            *rolling_usb = if *rolling_usb == 0.0 { inst_usb_bps } else { *rolling_usb * 0.70 + inst_usb_bps * 0.30 };
-            *rolling_wifi = if *rolling_wifi == 0.0 { inst_wifi_bps } else { *rolling_wifi * 0.70 + inst_wifi_bps * 0.30 };
+            // Smooth instantaneous measurement and bound against session average to prevent chunk-completion spikes
+            let bounded_inst = if session_avg_bps > 0.0 && bytes > 0 {
+                inst_bps
+                    .min(session_avg_bps * 1.6)
+                    .max(session_avg_bps * 0.4)
+            } else {
+                inst_bps
+            };
+
+            *rolling = if *rolling == 0.0 {
+                bounded_inst
+            } else {
+                *rolling * 0.70 + bounded_inst * 0.30
+            };
+            *rolling_usb = if *rolling_usb == 0.0 {
+                inst_usb_bps
+            } else {
+                *rolling_usb * 0.70 + inst_usb_bps * 0.30
+            };
+            *rolling_wifi = if *rolling_wifi == 0.0 {
+                inst_wifi_bps
+            } else {
+                *rolling_wifi * 0.70 + inst_wifi_bps * 0.30
+            };
 
             let rolling_mbps = *rolling / (1024.0 * 1024.0);
             if let Some(telemetry) = crate::util::telemetry::get_telemetry(transfer_id) {
@@ -397,10 +427,14 @@ pub fn get_progress(transfer_id: Uuid) -> Option<TransferProgress> {
         }
     }
 
-    let (throughput, usb_speed, wifi_speed, duration_secs) = if status == TransferStatus::Completed {
+    let (throughput, usb_speed, wifi_speed, duration_secs) = if status == TransferStatus::Completed
+    {
         let mut end_time = record.end_time.lock();
         let end_instant = *end_time.get_or_insert(now);
-        let elapsed = end_instant.duration_since(record.start_time).as_secs_f64().max(0.05);
+        let elapsed = end_instant
+            .duration_since(record.start_time)
+            .as_secs_f64()
+            .max(0.05);
         let avg = (bytes as f64) / elapsed;
         let avg_mbps = avg / (1024.0 * 1024.0);
         if let Some(telemetry) = crate::util::telemetry::get_telemetry(transfer_id) {
@@ -414,8 +448,14 @@ pub fn get_progress(transfer_id: Uuid) -> Option<TransferProgress> {
                 elapsed,
             )
         } else {
-            let is_usb = record.transport_name.contains("USB") || record.transport_name.contains("ADB") || record.transport_name.contains("127.0.0.1");
-            let is_wifi = record.transport_name.contains("Wi-Fi") || record.transport_name.contains("Hotspot") || record.transport_name.contains("P2P") || record.transport_name.contains("10.18.") || record.transport_name.contains("192.168.");
+            let is_usb = record.transport_name.contains("USB")
+                || record.transport_name.contains("ADB")
+                || record.transport_name.contains("127.0.0.1");
+            let is_wifi = record.transport_name.contains("Wi-Fi")
+                || record.transport_name.contains("Hotspot")
+                || record.transport_name.contains("P2P")
+                || record.transport_name.contains("10.18.")
+                || record.transport_name.contains("192.168.");
             if is_usb && is_wifi {
                 (avg, avg * 0.5, avg * 0.5, elapsed)
             } else if is_wifi {
@@ -430,8 +470,14 @@ pub fn get_progress(transfer_id: Uuid) -> Option<TransferProgress> {
         if *rolling_usb > 0.0 || *rolling_wifi > 0.0 {
             (*rolling, *rolling_usb, *rolling_wifi, elapsed)
         } else {
-            let is_usb = record.transport_name.contains("USB") || record.transport_name.contains("ADB") || record.transport_name.contains("127.0.0.1");
-            let is_wifi = record.transport_name.contains("Wi-Fi") || record.transport_name.contains("Hotspot") || record.transport_name.contains("P2P") || record.transport_name.contains("10.18.") || record.transport_name.contains("192.168.");
+            let is_usb = record.transport_name.contains("USB")
+                || record.transport_name.contains("ADB")
+                || record.transport_name.contains("127.0.0.1");
+            let is_wifi = record.transport_name.contains("Wi-Fi")
+                || record.transport_name.contains("Hotspot")
+                || record.transport_name.contains("P2P")
+                || record.transport_name.contains("10.18.")
+                || record.transport_name.contains("192.168.");
             if is_usb && is_wifi {
                 (*rolling, *rolling * 0.5, *rolling * 0.5, elapsed)
             } else if is_wifi {
@@ -454,7 +500,11 @@ pub fn get_progress(transfer_id: Uuid) -> Option<TransferProgress> {
         None
     } else {
         let elapsed = now.duration_since(record.start_time).as_secs_f64();
-        let overall_avg_bps = if elapsed > 0.3 { (bytes as f64) / elapsed } else { 0.0 };
+        let overall_avg_bps = if elapsed > 0.3 {
+            (bytes as f64) / elapsed
+        } else {
+            0.0
+        };
         let rolling_bps = *rolling;
 
         // Smarter weighted speed blending: blend 2-second moving average (70%) with session average (30%)
@@ -545,14 +595,22 @@ pub fn get_transfers() -> Vec<TransferSummary> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.ends_with(".meta.json")) {
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |n| n.ends_with(".meta.json"))
+            {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(meta) = serde_json::from_str::<crate::manifest::TransferMeta>(&content) {
+                    if let Ok(meta) =
+                        serde_json::from_str::<crate::manifest::TransferMeta>(&content)
+                    {
                         summaries.entry(meta.transfer_id).or_insert_with(|| {
-                            let status = if meta.status == TransferStatus::Completed {
-                                TransferStatus::Completed
-                            } else {
-                                TransferStatus::Paused // Resumable
+                            let status = match meta.status {
+                                TransferStatus::Completed => TransferStatus::Completed,
+                                TransferStatus::Cancelled => TransferStatus::Cancelled,
+                                TransferStatus::Failed => TransferStatus::Failed,
+                                TransferStatus::Paused => TransferStatus::Paused,
+                                TransferStatus::InProgress => TransferStatus::Paused,
                             };
 
                             TransferSummary {

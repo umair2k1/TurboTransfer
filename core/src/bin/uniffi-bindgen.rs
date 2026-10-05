@@ -12,10 +12,20 @@ fn main() {
         Utf8Path::new("target/debug/turbotransfer_core.dll")
     };
 
-    let out_dir = Utf8Path::new("/data/data/com.termux/files/home/turbotransfer_uniffi_out");
+    let out_dir_str = std::env::var("UNIFFI_OUT_DIR").unwrap_or_else(|_| {
+        if let Ok(home) = std::env::var("HOME") {
+            format!("{}/turbotransfer_uniffi_out", home)
+        } else {
+            "target/uniffi_out".to_string()
+        }
+    });
+    let out_dir = Utf8Path::new(&out_dir_str);
     let _ = std::fs::create_dir_all(out_dir);
 
-    println!("Generating Kotlin bindings using {:?} and {:?}", udl_path, cdylib_path);
+    println!(
+        "Generating Kotlin bindings using {:?} and {:?}",
+        udl_path, cdylib_path
+    );
 
     uniffi_bindgen::generate_bindings(
         udl_path,

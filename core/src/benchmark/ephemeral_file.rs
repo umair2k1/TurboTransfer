@@ -15,7 +15,7 @@ impl EphemeralFile {
         let dir = if let Some(d) = target_dir {
             d.to_path_buf()
         } else {
-            std::env::temp_dir().join("turbotransfer_bench")
+            crate::transfer::default_temp_dir()
         };
         std::fs::create_dir_all(&dir)?;
 

@@ -10,16 +10,16 @@
 
 During a code audit of the TurboTransfer codebase—focusing on the newly implemented **Hardware Benchmark & Link Calibration Subsystem** (`core/src/benchmark/`), the **Single-Writer Manifest Actor** (`core/src/manifest/actor.rs`), the **Multipath Data Plane** (`core/src/transfer/`), **Desktop TUI** (`tui/`), and **Android Settings Presentation** (`android/`)—several critical defects, race conditions, and architectural inconsistencies were identified.
 
-| Bug ID | Severity | Category | Affected Subsystem | Summary |
-|---|---|---|---|---|
-| **BUG-01** | **HIGH** | Functional / Persistence | `core::benchmark`, `api`, `android` | Calibration profile orphaned under default address; cancellation silently fails |
-| **BUG-02** | **HIGH** | Responsiveness / Cancellation | `core::benchmark`, `transfer::session` | Calibration sub-transfers block cancellation mid-stream until 250 MB transfer finishes |
-| **BUG-03** | **HIGH** | Data Integrity / Resilience | `core::manifest::actor` | `MetaActor` performs non-atomic writes to `meta.json`, risking crash corruption and progress loss |
-| **BUG-04** | **MEDIUM** | Performance / Async Runtime | `core::manifest::actor` | Synchronous blocking disk I/O executed inside async Tokio actor message loop |
-| **BUG-05** | **MEDIUM** | Resource Leak / Hygiene | `tui::app` | `benchmark_rx` receiver retained after completion, causing redundant polling |
-| **BUG-06** | **MEDIUM** | Observability / Control | `core::benchmark::runner`, `transfer::api` | Benchmark transfers omitted from global transfer registry, breaking pause/cancel APIs |
-| **BUG-07** | **LOW** | Feature Parity | `cli::main` | `turbo` CLI lacks `benchmark` and `calibrate` subcommands present in TUI and Android |
-| **BUG-08** | **LOW** | Security (TRD §11) | `core::protocol`, `transport` | Plaintext wire data plane across Local Hotspot / Wi-Fi Direct connections |
+| Bug ID | Severity | Category | Affected Subsystem | Status | Summary |
+|---|---|---|---|---|---|
+| **BUG-01** | **HIGH** | Functional / Persistence | `core::benchmark`, `api`, `android` | **RESOLVED** | Normalized peer keying and device ID pairing in calibration store |
+| **BUG-02** | **HIGH** | Responsiveness / Cancellation | `core::benchmark`, `transfer::session` | **RESOLVED** | Sub-transfers wired to registry cancellation tokens |
+| **BUG-03** | **HIGH** | Data Integrity / Resilience | `core::manifest::actor` | **RESOLVED** | Atomic tempfile write + rename to guarantee crash-resilient cold resumes |
+| **BUG-04** | **MEDIUM** | Performance / Async Runtime | `core::manifest::actor` | **RESOLVED** | Blocking disk I/O offloaded to `spawn_blocking` in actor |
+| **BUG-05** | **MEDIUM** | Resource Leak / Hygiene | `tui::app` | **RESOLVED** | `benchmark_rx = None` reset on terminal delivery |
+| **BUG-06** | **MEDIUM** | Observability / Control | `core::benchmark::runner`, `transfer::api` | **RESOLVED** | Benchmark transfers registered in global registry |
+| **BUG-07** | **LOW** | Feature Parity | `cli::main` | **RESOLVED** | `turbo bench` and `turbo calibrate` CLI subcommands implemented |
+| **BUG-08** | **LOW** | Security (TRD §11) | `core::protocol`, `transport` | **OPEN** | Plaintext wire data plane across Local Hotspot / Wi-Fi Direct connections |
 
 ---
 

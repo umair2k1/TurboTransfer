@@ -19,8 +19,9 @@ pub trait CalibrationProgressCallback: Send + Sync {
     fn on_progress(&self, update: CalibrationProgressUpdate);
 }
 
-static ACTIVE_CALIBRATIONS: LazyLock<Mutex<HashMap<String, (Arc<AtomicBool>, Arc<Mutex<Option<Uuid>>>)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_CALIBRATIONS: LazyLock<
+    Mutex<HashMap<String, (Arc<AtomicBool>, Arc<Mutex<Option<Uuid>>>)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn cancel_calibration(target_key: &str) {
     let normalized = crate::benchmark::config_store::get_pair_key(target_key);
@@ -48,9 +49,12 @@ pub async fn run_calibration_with_size(
     step_size_mb: Option<u32>,
 ) -> Result<CalibrationResult, TransferSessionError> {
     let target_id = target_device_id.unwrap_or_else(Uuid::new_v4);
-    let raw_key = match address.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        Some(addr) => addr.to_string(),
-        None => target_device_id.map(|id| id.to_string()).unwrap_or_default(),
+    let raw_key = match target_device_id {
+        Some(id) => id.to_string(),
+        None => match address.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            Some(addr) => addr.to_string(),
+            None => "default_peer".to_string(),
+        },
     };
     let target_key = crate::benchmark::config_store::get_pair_key(&raw_key);
 
@@ -130,31 +134,50 @@ async fn run_calibration_internal(
                 total_steps,
                 stage: "streams".to_string(),
                 config_under_test: config.clone(),
-                last_result_mbps: all_candidates.last().map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
+                last_result_mbps: all_candidates
+                    .last()
+                    .map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
             });
         }
         check_cancel()?;
 
-        let res = run_benchmark_transfer(
-            Some(target_id),
-            address,
-            TransportPreference::Combined,
-            step_size_mb,
-            Some(&config),
-            TransferPurpose::Calibration,
-            Some(active_transfer_id.clone()),
-        )
-        .await?;
+        let (avg_speed, duration_ms) = {
+            let res1 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            check_cancel()?;
+            let res2 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            (
+                (res1.avg_speed_mbps + res2.avg_speed_mbps) / 2.0,
+                res1.duration_ms + res2.duration_ms,
+            )
+        };
 
         let candidate = CalibrationCandidateResult {
             config: config.clone(),
-            avg_speed_mbps: res.avg_speed_mbps,
-            duration_ms: res.duration_ms,
+            avg_speed_mbps: avg_speed,
+            duration_ms,
             sweep_stage: "streams".to_string(),
         };
 
-        if res.avg_speed_mbps > best_stream_speed {
-            best_stream_speed = res.avg_speed_mbps;
+        if avg_speed > best_stream_speed {
+            best_stream_speed = avg_speed;
             best_streams = streams;
         }
 
@@ -181,31 +204,50 @@ async fn run_calibration_internal(
                 total_steps,
                 stage: "chunk_size".to_string(),
                 config_under_test: config.clone(),
-                last_result_mbps: all_candidates.last().map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
+                last_result_mbps: all_candidates
+                    .last()
+                    .map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
             });
         }
         check_cancel()?;
 
-        let res = run_benchmark_transfer(
-            Some(target_id),
-            address,
-            TransportPreference::Combined,
-            step_size_mb,
-            Some(&config),
-            TransferPurpose::Calibration,
-            Some(active_transfer_id.clone()),
-        )
-        .await?;
+        let (avg_speed, duration_ms) = {
+            let res1 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            check_cancel()?;
+            let res2 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            (
+                (res1.avg_speed_mbps + res2.avg_speed_mbps) / 2.0,
+                res1.duration_ms + res2.duration_ms,
+            )
+        };
 
         let candidate = CalibrationCandidateResult {
             config: config.clone(),
-            avg_speed_mbps: res.avg_speed_mbps,
-            duration_ms: res.duration_ms,
+            avg_speed_mbps: avg_speed,
+            duration_ms,
             sweep_stage: "chunk_size".to_string(),
         };
 
-        if res.avg_speed_mbps > best_chunk_speed {
-            best_chunk_speed = res.avg_speed_mbps;
+        if avg_speed > best_chunk_speed {
+            best_chunk_speed = avg_speed;
             best_chunk = chunk_bytes;
         }
 
@@ -235,31 +277,50 @@ async fn run_calibration_internal(
                 total_steps,
                 stage: "window".to_string(),
                 config_under_test: config.clone(),
-                last_result_mbps: all_candidates.last().map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
+                last_result_mbps: all_candidates
+                    .last()
+                    .map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
             });
         }
         check_cancel()?;
 
-        let res = run_benchmark_transfer(
-            Some(target_id),
-            address,
-            TransportPreference::Combined,
-            step_size_mb,
-            Some(&config),
-            TransferPurpose::Calibration,
-            Some(active_transfer_id.clone()),
-        )
-        .await?;
+        let (avg_speed, duration_ms) = {
+            let res1 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            check_cancel()?;
+            let res2 = run_benchmark_transfer(
+                Some(target_id),
+                address,
+                TransportPreference::Combined,
+                step_size_mb,
+                Some(&config),
+                TransferPurpose::Calibration,
+                Some(active_transfer_id.clone()),
+            )
+            .await?;
+            (
+                (res1.avg_speed_mbps + res2.avg_speed_mbps) / 2.0,
+                res1.duration_ms + res2.duration_ms,
+            )
+        };
 
         let candidate = CalibrationCandidateResult {
             config: config.clone(),
-            avg_speed_mbps: res.avg_speed_mbps,
-            duration_ms: res.duration_ms,
+            avg_speed_mbps: avg_speed,
+            duration_ms,
             sweep_stage: "window".to_string(),
         };
 
-        if res.avg_speed_mbps > best_window_speed {
-            best_window_speed = res.avg_speed_mbps;
+        if avg_speed > best_window_speed {
+            best_window_speed = avg_speed;
             best_window = window;
         }
 
@@ -281,7 +342,9 @@ async fn run_calibration_internal(
             total_steps,
             stage: "confirmation".to_string(),
             config_under_test: winning_config.clone(),
-            last_result_mbps: all_candidates.last().map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
+            last_result_mbps: all_candidates
+                .last()
+                .map(|c: &CalibrationCandidateResult| c.avg_speed_mbps),
         });
     }
     check_cancel()?;

@@ -100,10 +100,10 @@ graph TD
 * **Automated Root-Cause Bottleneck Classifier**: Mathematical diagnostic engine that analyzes pipeline ratios to classify bottlenecks (`RECEIVER_DISK_WRITE_BOTTLENECK`, `SENDER_DISK_READ_BOTTLENECK`, `NETWORK_LATENCY_JITTER`, `CPU_CHECKSUM_BOTTLENECK`, `NETWORK_BANDWIDTH_LIMIT`, `BALANCED_WIRE_SPEED`) with actionable recommendations.
 * **Dual-Format Persistent Log Exporter**: Automatically generates structured JSON (`<id>.json`) and human-readable timeline text logs (`<id>.log`) stored in `%APPDATA%\turbotransfer\logs` (PC) and `Download/TurboTransfer/logs` (Android public storage).
 * **Crash-Resilient Cold Resume**: Governed by an asynchronous `MetaActor` persisting contiguous chunk bitmaps in `meta.json` on disk every 250 ms or 4 completed chunks. Transfers survive cable disconnects, process restarts, or OS power events without re-transmitting completed chunks.
-* **Whole-File Integrity Validation**: Hardware-accelerated **CRC32c / SHA256** checksum verification with $O(1)$ in-flight GF(2) matrix combined CRC finalization (completing 1 GB+ verification in $<35\text{ ms}$).
+* **Whole-File Integrity Validation**: Hardware-accelerated Castagnoli **CRC32c / xxHash64** checksum verification with $O(1)$ in-flight GF(2) matrix combined CRC finalization (completing 1 GB+ verification in $<35\text{ ms}$).
 * **Zero Router / Zero Internet Requirement**: Direct Android Local-Only Hotspot (5 GHz SoftAp) or Wi-Fi Direct P2P Group Owner mode enables wire-speed transfers anywhere off the grid.
 * **Clean Architecture Android App & Foreground Service**: 100% Jetpack Compose Material 3 UI backed by a foreground `TransferService` holding `FULL_LOW_LATENCY` / `FULL_HIGH_PERF` WifiLocks and partial WakeLocks, complete with system notification pause/resume/cancel controls.
-* **Full 15-Screen Ratatui Terminal UI**: Complete terminal cockpit with 250 ms non-blocking asynchronous polling matching backend flush cycles, type-ahead search, device discovery, deep diagnostics, and interactive benchmark/calibration suites.
+* **Full 13-Screen Ratatui Terminal UI**: Complete terminal cockpit with 250 ms non-blocking asynchronous polling matching backend flush cycles, type-ahead search, device discovery, deep diagnostics, and interactive benchmark/calibration suites.
 * **Clean Architecture & SOLID Domain Decomposition**: Modular Hexagonal / Ports & Adapters architecture eliminating monolithic God modules. Cleanly isolates Transfer State Registry, Endpoint Discovery, Receiver Daemon, Multi-Stream Sender, and unified $N \ge 1$ Streaming Pipeline with decoupled ADB process orchestration and zero-allocation static logger.
 * **Automation-Friendly CLI (`turbo`)**: Fast, scriptable command-line interface with real-time rolling terminal progress bars, log inspection (`turbo log`, `turbo logs`), benchmark tests (`turbo benchmark`), and link calibration sweeps (`turbo calibrate`).
 * **Snapdragon 8 Elite Native Build Offload**: Integrated developer tooling (`tools/phone-builder.ps1`) that offloads core Rust compilation and full test suites over ADB to Snapdragon 8 Elite Oryon cores in 0.2–2.5s (25x faster than host laptop).
@@ -304,7 +304,7 @@ The Terminal User Interface is built with **Ratatui 0.28** and **Crossterm**, fe
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Complete 15-Screen Matrix
+### Complete 13-Screen Matrix
 
 | Screen | Identifier | Description | Key Navigation |
 |---|---|---|---|
@@ -316,13 +316,11 @@ The Terminal User Interface is built with **Ratatui 0.28** and **Crossterm**, fe
 | **6** | `TransferScreen` | Live cockpit showing gauges, dual-speed meters, and ETA | `P` (Pause), `R` (Resume), `C` (Cancel), `D` (Details) |
 | **7** | `TransferDetails` | Deep diagnostics: chunk matrix, error counters, socket state | `P` (Pause), `C` (Cancel), `Esc` (Back) |
 | **8** | `ReceiveFiles` | Receiver standby dashboard; auto-transitions on incoming stream | `S` (Settings), `Esc` (Back) |
-| **9** | `IncomingPrompt` | Security verification prompt for incoming transfers | `Enter` (Accept), `Esc` (Reject) |
-| **10** | `Devices` | Discovered devices manager with connection health | `Up`/`Down`, `R` (Refresh), `S` (Send), `Enter` |
-| **11** | `Transfers` | Tabbed transfer manager (*Current*, *Resumable*, *Completed*) | `Tab` / `Left`/`Right` (Switch tabs), `R` (Resume), `D` (Details), `C` (Cancel) |
-| **12** | `Resume` | Cold resume picker for interrupted `.part` files | `Enter` (Resume Selected), `Esc` (Back) |
-| **13** | `Benchmark` | Link throughput benchmark & 10-step parameter calibration suite | `Enter` (Run Benchmark), `C` (Calibrate), `X` (Cancel), `P` (Edit Peer), `S` (Cycle Size 100MB–1GB) |
-| **14** | `BenchmarkResults` | Benchmark/calibration scorecard with throughput metrics & saved config | `Esc` (Back to Benchmark), `M` / `Enter` (Main Menu) |
-| **15** | `Settings` | 6 modular configuration tabs with persistent JSON storage | `Tab` / `Left`/`Right`, `1`–`6`, `Up`/`Down`, `Space`/`Enter` |
+| **9** | `Devices` | Discovered devices manager with connection health | `Up`/`Down`, `R` (Refresh), `S` (Send), `Enter` |
+| **10** | `Transfers` | Tabbed transfer manager (*Current*, *Resumable*, *Completed*) | `Tab` / `Left`/`Right` (Switch tabs), `R` (Resume), `D` (Details), `C` (Cancel) |
+| **11** | `Benchmark` | Link throughput benchmark & 10-step parameter calibration suite | `Enter` (Run Benchmark), `C` (Calibrate), `X` (Cancel), `P` (Edit Peer), `S` (Cycle Size 100MB–1GB) |
+| **12** | `BenchmarkResults` | Benchmark/calibration scorecard with throughput metrics & saved config | `Esc` (Back to Benchmark), `M` / `Enter` (Main Menu) |
+| **13** | `Settings` | Modular configuration tabs (Transport, Storage) with persistent JSON storage | `Tab` / `Left`/`Right`, `Up`/`Down`, `Space`/`Enter` |
 
 ### Global TUI Shortcuts
 
@@ -411,11 +409,11 @@ Transmission dynamics are governed by adaptive algorithms tuned to physical link
 To eliminate manual trial-and-error, TurboTransfer includes an autonomous calibration engine (`core/src/benchmark/calibration.rs`):
 
 1. **Sweep Progression**: Sequentially evaluates combinations across:
-   * **Wi-Fi Parallel Streams**: 1, 2, 3, and 4 bonded TCP sockets.
-   * **Chunk Sizing**: 512 KiB, 1 MiB, 2 MiB, and 4 MiB chunks.
-   * **AIMD Window Presets**: `Aggressive` (wide burst window), `Balanced` (dynamic scaling), and `Conservative` (loss-sensitive).
-2. **Deterministic Evaluation**: Each candidate configuration is evaluated against a 20–50 MB synthetic ephemeral memory stream transmitted to the peer.
-3. **Persistent Profile Storage**: The winning configuration is serialized to `%APPDATA%\turbotransfer\calibrations.json` (Windows) or app local storage (Android). Subsequent transfers to that peer automatically load and apply the optimal parameters.
+   * **Wi-Fi Parallel Streams**: 2, 3, and 4 bonded TCP sockets.
+   * **Chunk Sizing**: 1 MiB, 2 MiB, and 4 MiB boundaries.
+   * **TCP Congestion Window Presets**: `Balanced`, `Aggressive`, and `Max`.
+2. **Deterministic Evaluation**: Each candidate configuration is evaluated against a 250 MB synthetic ephemeral stream transmitted to the peer with 2-run noise averaging.
+3. **Persistent Profile Storage**: The winning configuration is serialized to `<data_dir>/calibration/<device_id>.json`. Subsequent transfers to that peer automatically load and apply the optimal parameters.
 4. **Non-Destructive Ephemeral Testing**: Benchmark files are tagged with dedicated wire flags and cleaned up immediately after evaluation without touching user storage.
 
 ### AIMD Concurrency Window Controller
@@ -628,17 +626,9 @@ TUI and CLI configurations are stored in `%APPDATA%\turbotransfer\settings.json`
 
 ```json
 {
-  "transport_preference": "Automatic",
-  "p2p_band": "Prefer5GHz",
-  "chunk_size_mb": 64,
-  "verify_checksums": true,
-  "max_inflight_chunks": 4,
-  "buffer_pool_multiplier": 8,
-  "download_dir": "C:\\Users\\neo\\Downloads",
-  "disk_preallocation": true,
-  "require_pin_pairing": false,
-  "encryption_enabled": true,
-  "theme": "Dark",
+  "transport_pref": "Automatic",
+  "download_dir": "C:\\Users\\user\\Downloads",
+  "p2p_band": "5 GHz (Primary)",
   "poll_interval_ms": 250
 }
 ```
@@ -647,14 +637,9 @@ TUI and CLI configurations are stored in `%APPDATA%\turbotransfer\settings.json`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `transport_preference` | String | `"Automatic"` | Default transport mode (`Automatic`, `Combined`, `UsbOnly`, `WifiDirectOnly`) |
-| `p2p_band` | String | `"Prefer5GHz"` | Wireless band preference (`Prefer5GHz`, `Prefer2_4GHz`, `Auto`) |
-| `chunk_size_mb` | Integer | `64` | Size of individual transfer chunks in MiB |
-| `verify_checksums` | Boolean | `true` | Enforce xxHash64 per-chunk and CRC32c whole-file validation |
-| `max_inflight_chunks` | Integer | `4` | Max concurrent unacknowledged chunks per transport |
-| `buffer_pool_multiplier`| Integer | `8` | Number of pre-allocated chunk buffers in memory pool |
+| `transport_pref` | String | `"Automatic"` | Default transport mode (`Automatic`, `Combined`, `USB only`, `Wi-Fi Direct only`) |
 | `download_dir` | String | System default | Default directory for saving received files |
-| `disk_preallocation` | Boolean | `true` | Pre-allocate destination file size on disk (`.part` staging) |
+| `p2p_band` | String | `"5 GHz (Primary)"` | Wireless band preference (`5 GHz (Primary)`, `2.4 GHz (Fallback)`) |
 | `poll_interval_ms` | Integer | `250` | Progress polling and `MetaActor` flush frequency |
 
 ---
@@ -677,7 +662,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\phone-builder.ps1 test -Package
 * **`benchmark_tests` (10 tests)**: End-to-end loopback benchmark runs, 10-step calibration sweep, config store save/get/clear, ephemeral file lifecycle, and backward wire compatibility.
 * **`chunk_benchmark_tests` (2 tests)**: Memory allocation bounds across chunk sizing and multi-channel configuration benchmarking.
 * **`chunk_tests` (9 tests)**: Chunk boundary math (exact multiple, single-byte, remainder, zero-byte), xxHash64 & CRC32c reference vectors, manifest generation.
-* **`cold_resume_tests` (3 tests)**: Process crash simulation mid-transfer with 100% byte-for-byte SHA256 integrity verification and live MetaActor auto-persistence.
+* **`cold_resume_tests` (3 tests)**: Process crash simulation mid-transfer with 100% byte-for-byte CRC32c integrity verification and live MetaActor auto-persistence.
 * **`direct_cli_tcp_tests` (2 tests)**: Sequential multi-file transfers and loopback CLI transfer socket validation.
 * **`multipath_tests` (5 tests)**: Single transport drop resilience, duplicate ACK idempotence, chunk NACK requeue/retry, and out-of-order chunk assembly.
 * **`protocol_tests` (5 tests)**: Wire framing, length prefix validation, message serialization roundtrips, malformed frame protection, and legacy ACK compatibility.

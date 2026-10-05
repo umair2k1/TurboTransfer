@@ -134,7 +134,9 @@ pub fn get_devices() -> Vec<DeviceInfo> {
                     use std::time::Duration;
                     let mut wifi_ready = false;
                     let addr = SocketAddr::from(([127, 0, 0, 1], 9875));
-                    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+                    if let Ok(mut stream) =
+                        TcpStream::connect_timeout(&addr, Duration::from_millis(250))
+                    {
                         use std::io::{BufRead, BufReader};
                         let mut reader = BufReader::new(&mut stream);
                         let mut line = String::new();
@@ -149,7 +151,9 @@ pub fn get_devices() -> Vec<DeviceInfo> {
                                         if cur_ssid.as_deref() == Some(ssid) {
                                             wifi_ready = true;
                                         } else {
-                                            let config = crate::transport::WifiDirectConfig::new(ssid, passphrase, "", 9876);
+                                            let config = crate::transport::WifiDirectConfig::new(
+                                                ssid, passphrase, "", 9876,
+                                            );
                                             let _ = crate::transport::WifiDirectTransport::associate_wlan_windows_sync(&config);
                                             wifi_ready = true;
                                         }
@@ -180,7 +184,9 @@ pub fn get_devices() -> Vec<DeviceInfo> {
                 };
 
                 devices.push(DeviceInfo {
-                    device_id: Uuid::from_u128(crate::checksum::compute_xxhash64(d.serial.as_bytes()) as u128),
+                    device_id: Uuid::from_u128(crate::checksum::compute_xxhash64(
+                        d.serial.as_bytes(),
+                    ) as u128),
                     device_name: name,
                     transport: transport_desc,
                     is_connected: true,
@@ -191,13 +197,15 @@ pub fn get_devices() -> Vec<DeviceInfo> {
     }
 
     // 2. Probe 5 GHz Hotspot / Wi-Fi Direct Gateway endpoints
-    for &wifi_ip in &["10.18.163.130", "192.168.43.1", "192.168.43.2", "192.168.1.19"] {
+    for &wifi_ip in &["192.168.43.1", "192.168.49.1", "192.168.137.1"] {
         if seen_ips.contains(wifi_ip) {
             continue;
         }
         if let Ok(stream) = std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from((
-                wifi_ip.parse::<std::net::Ipv4Addr>().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+                wifi_ip
+                    .parse::<std::net::Ipv4Addr>()
+                    .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
                 9876,
             )),
             std::time::Duration::from_millis(60),
@@ -205,7 +213,9 @@ pub fn get_devices() -> Vec<DeviceInfo> {
             drop(stream);
             seen_ips.insert(wifi_ip.to_string());
             devices.push(DeviceInfo {
-                device_id: Uuid::from_u128(crate::checksum::compute_xxhash64(wifi_ip.as_bytes()) as u128),
+                device_id: Uuid::from_u128(
+                    crate::checksum::compute_xxhash64(wifi_ip.as_bytes()) as u128
+                ),
                 device_name: format!("Android Phone (5 GHz Wi-Fi Hotspot: {})", wifi_ip),
                 transport: "5 GHz Wi-Fi Direct".to_string(),
                 is_connected: true,

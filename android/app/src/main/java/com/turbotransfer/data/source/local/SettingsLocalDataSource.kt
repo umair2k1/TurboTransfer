@@ -17,6 +17,7 @@ class SettingsLocalDataSource @Inject constructor(
     private val keyPrefer5Ghz = "prefer_5ghz"
     private val keyAutoWakeLock = "auto_wake_lock"
     private val keyDestDir = "dest_dir"
+    private val keyAutoAcceptTransfers = "auto_accept_transfers"
 
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
@@ -55,5 +56,13 @@ class SettingsLocalDataSource @Inject constructor(
 
     fun setReceiveDestDir(dir: String) {
         prefs.edit().putString(keyDestDir, dir).apply()
+    }
+
+    fun isAutoAcceptTransfers(): Boolean {
+        return prefs.getBoolean(keyAutoAcceptTransfers, false)
+    }
+
+    fun setAutoAcceptTransfers(enabled: Boolean) {
+        prefs.edit().putBoolean(keyAutoAcceptTransfers, enabled).apply()
     }
 }

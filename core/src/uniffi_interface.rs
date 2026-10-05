@@ -5,10 +5,9 @@ use crate::manifest::{TransferRole, TransferStatus};
 use crate::transfer::api::{
     cancel_transfer as api_cancel_transfer, enter_receive_mode as api_enter_receive_mode,
     get_devices as api_get_devices, get_progress as api_get_progress,
-    get_transfers as api_get_transfers, pause_transfer as api_pause_transfer,
-    leave_receive_mode as api_leave_receive_mode,
-    resume_transfer as api_resume_transfer, start_transfer as api_start_transfer,
-    TransportPreference as ApiTransportPreference,
+    get_transfers as api_get_transfers, leave_receive_mode as api_leave_receive_mode,
+    pause_transfer as api_pause_transfer, resume_transfer as api_resume_transfer,
+    start_transfer as api_start_transfer, TransportPreference as ApiTransportPreference,
 };
 
 #[derive(uniffi::Enum)]
@@ -402,6 +401,11 @@ pub fn set_data_directory(path: String) {
 }
 
 #[uniffi::export]
+pub fn set_temp_directory(path: String) {
+    crate::transfer::api::set_custom_temp_dir(std::path::PathBuf::from(path));
+}
+
+#[uniffi::export]
 pub fn get_transfer_log_json(transfer_id: String) -> String {
     let id = match Uuid::parse_str(&transfer_id) {
         Ok(i) => i,
@@ -411,7 +415,9 @@ pub fn get_transfer_log_json(transfer_id: String) -> String {
         let report = telemetry.generate_report();
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     } else {
-        let log_path = crate::transfer::api::default_data_dir().join("logs").join(format!("{}.json", transfer_id));
+        let log_path = crate::transfer::api::default_data_dir()
+            .join("logs")
+            .join(format!("{}.json", transfer_id));
         std::fs::read_to_string(&log_path).unwrap_or_else(|_| "{}".to_string())
     }
 }
@@ -422,7 +428,9 @@ pub fn get_transfer_bottleneck_report(transfer_id: String) -> Option<FfiBottlene
     let report = if let Some(telemetry) = crate::util::telemetry::get_telemetry(id) {
         telemetry.generate_report()
     } else {
-        let log_path = crate::transfer::api::default_data_dir().join("logs").join(format!("{}.json", transfer_id));
+        let log_path = crate::transfer::api::default_data_dir()
+            .join("logs")
+            .join(format!("{}.json", transfer_id));
         let content = std::fs::read_to_string(&log_path).ok()?;
         serde_json::from_str::<crate::util::telemetry::BottleneckReport>(&content).ok()?
     };
@@ -465,9 +473,15 @@ pub fn get_transfer_bottleneck_report(transfer_id: String) -> Option<FfiBottlene
 }
 
 #[uniffi::export]
-pub fn export_transfer_logs(transfer_id: String, output_dir: Option<String>) -> Result<String, FfiTransferError> {
-    let id = Uuid::parse_str(&transfer_id).map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
-    let out_dir = output_dir.map(PathBuf::from).unwrap_or_else(crate::transfer::api::default_data_dir);
+pub fn export_transfer_logs(
+    transfer_id: String,
+    output_dir: Option<String>,
+) -> Result<String, FfiTransferError> {
+    let id = Uuid::parse_str(&transfer_id)
+        .map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
+    let out_dir = output_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::transfer::api::default_data_dir);
     if let Some(telemetry) = crate::util::telemetry::get_telemetry(id) {
         telemetry
             .export_log_files(&out_dir)
@@ -494,7 +508,9 @@ pub fn list_transfer_logs() -> Vec<FfiTransferLogSummary> {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(report) = serde_json::from_str::<crate::util::telemetry::BottleneckReport>(&content) {
+                    if let Ok(report) =
+                        serde_json::from_str::<crate::util::telemetry::BottleneckReport>(&content)
+                    {
                         let log_path = path.with_extension("log");
                         summaries.push(FfiTransferLogSummary {
                             transfer_id: report.transfer_id.to_string(),
@@ -525,11 +541,11 @@ pub fn start_transfer(
     let rt = get_runtime();
     let path = PathBuf::from(file_path);
     let dev_id = device_id.and_then(|s| Uuid::parse_str(&s).ok());
-    let handle = rt.block_on(async {
-        api_start_transfer(path, file_name, dev_id, transport_pref.into(), address).await
-    }).map_err(|e| FfiTransferError::Generic {
-        msg: e.to_string(),
-    })?;
+    let handle = rt
+        .block_on(async {
+            api_start_transfer(path, file_name, dev_id, transport_pref.into(), address).await
+        })
+        .map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
 
     Ok(FfiTransferHandle {
         transfer_id: handle.transfer_id.to_string(),
@@ -544,11 +560,9 @@ pub fn enter_receive_mode(
     let rt = get_runtime();
     let dir = PathBuf::from(dest_dir);
     let addr_clone = address.clone();
-    let _join_handle = rt.block_on(async {
-        api_enter_receive_mode(addr_clone, dir).await
-    }).map_err(|e| FfiTransferError::Generic {
-        msg: e.to_string(),
-    })?;
+    let _join_handle = rt
+        .block_on(async { api_enter_receive_mode(addr_clone, dir).await })
+        .map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
 
     let addr = address.unwrap_or_else(|| crate::transfer::api::DEFAULT_LISTEN_ADDR.to_string());
     Ok(format!("Listening on {}", addr))
@@ -654,13 +668,8 @@ pub fn run_benchmark(
     let addr = address.as_deref();
     let res = rt
         .block_on(async {
-            crate::benchmark::runner::run_benchmark(
-                dev_id,
-                addr,
-                transport_pref.into(),
-                size_mb,
-            )
-            .await
+            crate::benchmark::runner::run_benchmark(dev_id, addr, transport_pref.into(), size_mb)
+                .await
         })
         .map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
 
@@ -676,18 +685,15 @@ pub fn run_calibration(
     let rt = get_runtime();
     let dev_id = target_device_id.and_then(|s| Uuid::parse_str(&s).ok());
     let addr = address.as_deref();
-    let bridge: Option<Box<dyn crate::benchmark::CalibrationProgressCallback>> = callback.map(|cb| {
-        Box::new(FfiProgressBridge { callback: cb }) as Box<dyn crate::benchmark::CalibrationProgressCallback>
-    });
+    let bridge: Option<Box<dyn crate::benchmark::CalibrationProgressCallback>> =
+        callback.map(|cb| {
+            Box::new(FfiProgressBridge { callback: cb })
+                as Box<dyn crate::benchmark::CalibrationProgressCallback>
+        });
 
     let res = rt
         .block_on(async {
-            crate::benchmark::calibration::run_calibration(
-                dev_id,
-                addr,
-                bridge,
-            )
-            .await
+            crate::benchmark::calibration::run_calibration(dev_id, addr, bridge).await
         })
         .map_err(|e| FfiTransferError::Generic { msg: e.to_string() })?;
 

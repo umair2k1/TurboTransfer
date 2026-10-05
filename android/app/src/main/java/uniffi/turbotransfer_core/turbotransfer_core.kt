@@ -774,6 +774,8 @@ internal open class UniffiVTableCallbackInterfaceFfiCalibrationProgressCallback(
 
 
 
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -829,6 +831,8 @@ internal interface UniffiLib : Library {
     fun uniffi_turbotransfer_core_fn_func_run_calibration(`targetDeviceId`: RustBuffer.ByValue,`address`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_turbotransfer_core_fn_func_set_data_directory(`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    fun uniffi_turbotransfer_core_fn_func_set_temp_directory(`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     fun uniffi_turbotransfer_core_fn_func_start_transfer(`filePath`: RustBuffer.ByValue,`fileName`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`transportPref`: RustBuffer.ByValue,`address`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -984,6 +988,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_turbotransfer_core_checksum_func_set_data_directory(
     ): Short
+    fun uniffi_turbotransfer_core_checksum_func_set_temp_directory(
+    ): Short
     fun uniffi_turbotransfer_core_checksum_func_start_transfer(
     ): Short
     fun uniffi_turbotransfer_core_checksum_func_stop_receive_mode(
@@ -1062,6 +1068,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_turbotransfer_core_checksum_func_set_data_directory() != 5757.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_turbotransfer_core_checksum_func_set_temp_directory() != 7115.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_turbotransfer_core_checksum_func_start_transfer() != 54351.toShort()) {
@@ -3002,6 +3011,14 @@ public object FfiConverterSequenceTypeFfiTransferSummary: FfiConverterRustBuffer
         = 
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_turbotransfer_core_fn_func_set_data_directory(
+        FfiConverterString.lower(`path`),_status)
+}
+    
+    
+ fun `setTempDirectory`(`path`: kotlin.String)
+        = 
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_turbotransfer_core_fn_func_set_temp_directory(
         FfiConverterString.lower(`path`),_status)
 }
     

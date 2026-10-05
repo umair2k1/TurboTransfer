@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use tempfile::tempdir;
 use turbotransfer_core::manifest::{
-    coalesce_ranges, expand_ranges, MetaActor, TransferMeta, TransferRole,
-    TransferStatus, TransportType,
+    coalesce_ranges, expand_ranges, MetaActor, TransferMeta, TransferRole, TransferStatus,
+    TransportType,
 };
 
 use uuid::Uuid;
@@ -196,7 +196,9 @@ fn test_pause_and_cancel_from_non_tokio_thread() {
     let pause_thread = std::thread::spawn(move || {
         turbotransfer_core::transfer::api::pause_transfer(transfer_id);
     });
-    pause_thread.join().expect("pause_transfer must not panic on plain OS thread");
+    pause_thread
+        .join()
+        .expect("pause_transfer must not panic on plain OS thread");
 
     let status = turbotransfer_core::transfer::api::transfer_control_status(transfer_id);
     assert_eq!(status, Some(TransferStatus::Paused));
@@ -205,8 +207,45 @@ fn test_pause_and_cancel_from_non_tokio_thread() {
     let cancel_thread = std::thread::spawn(move || {
         turbotransfer_core::transfer::api::cancel_transfer(transfer_id);
     });
-    cancel_thread.join().expect("cancel_transfer must not panic on plain OS thread");
+    cancel_thread
+        .join()
+        .expect("cancel_transfer must not panic on plain OS thread");
 
-    let status_after_cancel = turbotransfer_core::transfer::api::transfer_control_status(transfer_id);
+    let status_after_cancel =
+        turbotransfer_core::transfer::api::transfer_control_status(transfer_id);
     assert_eq!(status_after_cancel, Some(TransferStatus::Cancelled));
+}
+
+#[tokio::test]
+async fn test_actor_immediate_complete_flush() {
+    let temp_dir = tempdir().unwrap();
+    let meta_path = temp_dir.path().join("meta_complete.json");
+
+    let initial_meta = TransferMeta::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        "complete_test.bin".into(),
+        1000,
+        100,
+        10,
+        TransferRole::Receiver,
+        Uuid::new_v4(),
+    );
+
+    let (handle, join_handle) = MetaActor::spawn(meta_path.clone(), initial_meta, 32);
+
+    for i in 0..10 {
+        handle
+            .send_chunk_completed(i, TransportType::Usb, 100)
+            .await;
+    }
+
+    handle.complete().await;
+    join_handle.await.unwrap();
+
+    let disk_meta: TransferMeta =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    assert_eq!(disk_meta.status, TransferStatus::Completed);
+    assert_eq!(disk_meta.completed_ranges, vec![(0, 9)]);
+    assert_eq!(disk_meta.transport_stats.usb.bytes, 1000);
 }

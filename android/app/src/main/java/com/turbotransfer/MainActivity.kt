@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
             this,
             transferReceiver,
             filter,
-            ContextCompat.RECEIVER_EXPORTED
+            ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
         setContent {
@@ -128,12 +128,6 @@ class MainActivity : ComponentActivity() {
                 Log.d("TurboTransfer", "Intent action received: STOP_RECEIVE")
                 mainViewModel.handleStopReceiveBroadcast()
             }
-            "com.turbotransfer.START_TRANSFER" -> {
-                val path = intent.getStringExtra("file_path") ?: return
-                val address = intent.getStringExtra("address") ?: "127.0.0.1:9876"
-                Log.d("TurboTransfer", "Intent action received: START_TRANSFER path=$path, address=$address")
-                mainViewModel.handleStartTransferBroadcast(path, address)
-            }
         }
     }
 
@@ -158,18 +152,27 @@ class MainActivity : ComponentActivity() {
             permissionLauncher.launch(ungranted.toTypedArray())
         }
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
-            try {
-                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                    data = android.net.Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
+    }
+
+    fun checkAndPromptAllFilesAccess(onGranted: () -> Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            if (android.os.Environment.isExternalStorageManager()) {
+                onGranted()
+            } else {
                 try {
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = android.net.Uri.parse("package:$packageName")
+                    }
                     startActivity(intent)
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                    try {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                        startActivity(intent)
+                    } catch (_: Exception) {}
+                }
             }
+        } else {
+            onGranted()
         }
     }
 

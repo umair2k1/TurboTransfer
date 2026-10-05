@@ -88,13 +88,7 @@ pub fn render_benchmark_results(f: &mut Frame, app: &AppState, area: Rect) {
             Line::from(Span::styled("   CALIBRATION PROFILE SAVED: Future transfers to this peer will automatically leverage these parameters.", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
         ];
         (title, lines)
-    } else {
-        let (measured_mbps, transport_name) = if let Some(res) = &app.benchmark_result {
-            (res.throughput_mbps, format!("{:?}", res.transport))
-        } else {
-            (52.4, "Combined (USB + 5 GHz Wi-Fi)".to_string())
-        };
-        let aoa_baseline = 2.8; // Historical AOA baseline (MB/s)
+    } else if let Some(res) = &app.benchmark_result {
         let title = " Throughput Measurements ";
         let lines = vec![
             Line::from(""),
@@ -104,7 +98,7 @@ pub fn render_benchmark_results(f: &mut Frame, app: &AppState, area: Rect) {
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(
-                    transport_name,
+                    format!("{:?}", res.transport),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -116,83 +110,53 @@ pub fn render_benchmark_results(f: &mut Frame, app: &AppState, area: Rect) {
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(
-                    format!("{:.2} MB/s", measured_mbps),
+                    format!("{:.2} MB/s", res.throughput_mbps),
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("  ({:.2} Mbps)", measured_mbps * 8.0),
+                    format!("  ({:.2} Mbps)", res.throughput_mbps * 8.0),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "   Evaluation Duration: ",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:.2}s", res.duration_ms as f64 / 1000.0),
                     Style::default().fg(Color::White),
                 ),
             ]),
             Line::from(""),
             Line::from(Span::styled(
-                "   ── Throughput Comparison vs Baselines ───────────────",
+                "   Press [B] to run another benchmark or [C] to start link calibration.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        (title, lines)
+    } else {
+        let title = " Benchmark Results ";
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "   No benchmark or calibration results available.",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "   Press [B] on the main menu to run a transport benchmark,",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "   or trigger link calibration to measure real hardware throughput.",
                 Style::default().fg(Color::DarkGray),
             )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "   TurboTransfer Multipath : ",
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "█████████████████████████████████████████████ ",
-                    Style::default().fg(Color::Green),
-                ),
-                Span::styled(
-                    format!("{:.2} MB/s", measured_mbps),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "   5 GHz Wi-Fi Direct      : ",
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(
-                    "██████████████████████████████               ",
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled("36.80 MB/s", Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "   USB (ADB Tunnel)        : ",
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(
-                    "████████                                     ",
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled("10.60 MB/s", Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "   Legacy Single-Channel   : ",
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    "██                                           ",
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("{:.2} MB/s", aoa_baseline),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "   PERFORMANCE GATE PASSED: Hardware link saturation verified.",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )),
         ];
         (title, lines)
     };
