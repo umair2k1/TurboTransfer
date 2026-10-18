@@ -45,4 +45,10 @@ open class SettingsRepositoryImpl(
     open fun setAutoAcceptTransfers(enabled: Boolean) {
         localDataSource?.setAutoAcceptTransfers(enabled)
     }
+
+    open fun isManageStorageDontAskAgain(): Boolean = localDataSource?.isManageStorageDontAskAgain() ?: false
+
+    open fun setManageStorageDontAskAgain(dontAsk: Boolean) {
+        localDataSource?.setManageStorageDontAskAgain(dontAsk)
+    }
 }

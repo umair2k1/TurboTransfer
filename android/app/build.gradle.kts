@@ -21,17 +21,15 @@ android {
         versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
+        vectorDrawables { useSupportLibrary = true }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                    getDefaultProguardFile("proguard-android-optimize.txt"),
+                    "proguard-rules.pro"
             )
         }
     }
@@ -39,22 +37,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        compose = true
-    }
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
-        }
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+    sourceSets { getByName("main") { jniLibs.srcDirs("src/main/jniLibs") } }
 }
 
 dependencies {
@@ -86,6 +72,12 @@ tasks.register<Exec>("buildRustPhone") {
     group = "build"
     description = "Compiles native Rust core on connected Snapdragon 8 Elite via ADB"
     workingDir = rootDir.parentFile
-    commandLine("powershell.exe", "-ExecutionPolicy", "Bypass", "-File", "tools/phone-builder.ps1", "build-core")
+    commandLine(
+            "powershell.exe",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "tools/phone-builder.ps1",
+            "build-core"
+    )
 }
-

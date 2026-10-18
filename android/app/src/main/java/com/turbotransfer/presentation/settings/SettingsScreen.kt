@@ -12,22 +12,41 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.turbotransfer.presentation.components.StoragePermissionUtils
 
 @Composable
 fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel(),
-    onNavigateToTransfer: () -> Unit = {}
+        viewModel: SettingsViewModel = hiltViewModel(),
+        onNavigateToTransfer: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showBenchmarkHelpDialog by remember { mutableStateOf(false) }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshStoragePermission(StoragePermissionUtils.hasAllFilesAccess())
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshStoragePermission(StoragePermissionUtils.hasAllFilesAccess())
+    }
     LaunchedEffect(uiState.userMessage) {
         uiState.userMessage?.let { msg ->
             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
@@ -36,24 +55,22 @@ fun SettingsScreen(
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
     ) {
         // 1. Header
         item {
             Column {
                 Text(
-                    "Settings",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
+                        "Settings",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "Preferences and system hardware information",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "Preferences and system hardware information",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -61,43 +78,158 @@ fun SettingsScreen(
         // 2. Device Identity
         item {
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors =
+                            CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        "Device Identity",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                            "Device Identity",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
                     )
 
                     OutlinedTextField(
-                        value = uiState.deviceName,
-                        onValueChange = { viewModel.setDeviceName(it) },
-                        label = { Text("Device Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                            value = uiState.deviceName,
+                            onValueChange = { viewModel.setDeviceName(it) },
+                            label = { Text("Device Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
                     )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "Hardware:",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                "Hardware:",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "${Build.MANUFACTURER} ${Build.MODEL}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium
+                                "${Build.MANUFACTURER} ${Build.MODEL}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium
                         )
+                    }
+                }
+            }
+        }
+        // Storage & Direct Streaming Access
+        item {
+            Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors =
+                            CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
+            ) {
+                Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                                "Storage & Direct Streaming",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                        )
+                        Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color =
+                                        if (uiState.isAllFilesAccessGranted)
+                                                MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.errorContainer
+                        ) {
+                            Text(
+                                    text =
+                                            if (uiState.isAllFilesAccessGranted) "Granted"
+                                            else "Action Required",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color =
+                                            if (uiState.isAllFilesAccessGranted)
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                            else MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                            text =
+                                    if (uiState.isAllFilesAccessGranted) {
+                                        "All Files Access is granted. TurboTransfer streams arbitrarily large files, zip archives, and folders directly from storage at wire speed with zero cache duplication."
+                                    } else {
+                                        "All Files Access is not granted. Files must be staged into internal cache before sending, which will freeze large transfers and will fail if phone storage is low."
+                                    },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Button(
+                            onClick = {
+                                StoragePermissionUtils.openAllFilesAccessSettings(context)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors =
+                                    if (uiState.isAllFilesAccessGranted)
+                                            ButtonDefaults.outlinedButtonColors()
+                                    else ButtonDefaults.buttonColors()
+                    ) {
+                        Icon(
+                                imageVector =
+                                        if (uiState.isAllFilesAccessGranted)
+                                                Icons.Default.CheckCircle
+                                        else Icons.Default.Security,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                                if (uiState.isAllFilesAccessGranted) "Manage Storage Permission"
+                                else "Grant All Files Access"
+                        )
+                    }
+
+                    if (!uiState.isAllFilesAccessGranted && uiState.isManageStorageDontAskAgain) {
+                        HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                        Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                        "Permission Prompt",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                        "Dialog is suppressed ('Don't ask again' active)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                    onClick = { viewModel.setManageStorageDontAskAgain(false) }
+                            ) { Text("Reset") }
+                        }
                     }
                 }
             }
@@ -106,49 +238,70 @@ fun SettingsScreen(
         // 3. Network & Performance Options
         item {
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors =
+                            CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        "Network & Performance",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                            "Network & Performance",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
                     )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Prefer 5 GHz Band", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                            Text("Use 802.11ac 5 GHz hotspot for wire-speed performance", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                    "Prefer 5 GHz Band",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                    "Use 802.11ac 5 GHz hotspot for wire-speed performance",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Switch(
-                            checked = uiState.prefer5Ghz,
-                            onCheckedChange = { viewModel.setPrefer5Ghz(it) }
+                                checked = uiState.prefer5Ghz,
+                                onCheckedChange = { viewModel.setPrefer5Ghz(it) }
                         )
                     }
 
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("High-Performance WakeLock", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                            Text("Prevent Wi-Fi power-save polling and CPU throttling during transfers", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                    "High-Performance WakeLock",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                    "Prevent Wi-Fi power-save polling and CPU throttling during transfers",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Switch(
-                            checked = uiState.autoWakeLock,
-                            onCheckedChange = { viewModel.setAutoWakeLock(it) }
+                                checked = uiState.autoWakeLock,
+                                onCheckedChange = { viewModel.setAutoWakeLock(it) }
                         )
                     }
                 }
@@ -158,70 +311,73 @@ fun SettingsScreen(
         // 4. Hardware Benchmark & Calibration
         item {
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors =
+                            CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Benchmark & Link Calibration",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                                "Benchmark & Link Calibration",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                         )
                         IconButton(
-                            onClick = { showBenchmarkHelpDialog = true },
-                            modifier = Modifier.size(28.dp)
+                                onClick = { showBenchmarkHelpDialog = true },
+                                modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
-                                Icons.Default.Info,
-                                contentDescription = "Benchmark Guide",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
+                                    Icons.Default.Info,
+                                    contentDescription = "Benchmark Guide",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
                             )
                         }
                     }
                     Text(
-                        "Test raw network and storage throughput or run an automated 10-step parameter sweep to optimize link performance.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Test raw network and storage throughput or run an automated 10-step parameter sweep to optimize link performance.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     OutlinedTextField(
-                        value = uiState.targetAddress,
-                        onValueChange = { viewModel.setTargetAddress(it) },
-                        label = { Text("Peer Address (Auto-detect Multipath)") },
-                        placeholder = { Text("e.g. 127.0.0.1:9876,10.188.197.1:9876") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                            value = uiState.targetAddress,
+                            onValueChange = { viewModel.setTargetAddress(it) },
+                            label = { Text("Peer Address (Auto-detect Multipath)") },
+                            placeholder = { Text("e.g. 127.0.0.1:9876,10.188.197.1:9876") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
                     )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = {
-                                viewModel.runBenchmark()
-                                onNavigateToTransfer()
-                            },
-                            enabled = !uiState.isBenchmarking && !uiState.isCalibrating,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
+                                onClick = {
+                                    viewModel.runBenchmark()
+                                    onNavigateToTransfer()
+                                },
+                                enabled = !uiState.isBenchmarking && !uiState.isCalibrating,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
                         ) {
                             if (uiState.isBenchmarking) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text("Running...", fontSize = 12.sp)
@@ -231,17 +387,23 @@ fun SettingsScreen(
                         }
 
                         Button(
-                            onClick = {
-                                if (uiState.isCalibrating) {
-                                    viewModel.cancelCalibration()
-                                } else {
-                                    viewModel.runCalibration()
-                                }
-                            },
-                            enabled = !uiState.isBenchmarking,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = if (uiState.isCalibrating) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors()
+                                onClick = {
+                                    if (uiState.isCalibrating) {
+                                        viewModel.cancelCalibration()
+                                    } else {
+                                        viewModel.runCalibration()
+                                    }
+                                },
+                                enabled = !uiState.isBenchmarking,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors =
+                                        if (uiState.isCalibrating)
+                                                ButtonDefaults.buttonColors(
+                                                        containerColor =
+                                                                MaterialTheme.colorScheme.error
+                                                )
+                                        else ButtonDefaults.buttonColors()
                         ) {
                             if (uiState.isCalibrating) {
                                 Text("Cancel", fontSize = 13.sp)
@@ -254,19 +416,27 @@ fun SettingsScreen(
                     // Progress indicator for calibration
                     if (uiState.isCalibrating && uiState.calibrationProgress != null) {
                         val prog = uiState.calibrationProgress!!
-                        val progressFraction = prog.currentStep.toFloat() / prog.totalSteps.toFloat()
+                        val progressFraction =
+                                prog.currentStep.toFloat() / prog.totalSteps.toFloat()
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             LinearProgressIndicator(
-                                progress = { progressFraction },
-                                modifier = Modifier.fillMaxWidth().height(6.dp),
+                                    progress = { progressFraction },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp),
                             )
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Step ${prog.currentStep}/${prog.totalSteps} (${prog.stage})", style = MaterialTheme.typography.labelSmall)
+                                Text(
+                                        "Step ${prog.currentStep}/${prog.totalSteps} (${prog.stage})",
+                                        style = MaterialTheme.typography.labelSmall
+                                )
                                 prog.lastResultMbps?.let {
-                                    Text("Last: ${String.format("%.1f", it)} MB/s", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Text(
+                                            "Last: ${String.format("%.1f", it)} MB/s",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -275,31 +445,74 @@ fun SettingsScreen(
                     // Benchmark Result Card
                     uiState.benchmarkResult?.let { res ->
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.fillMaxWidth()
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("Latest Benchmark Results", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Average Throughput:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${String.format("%.1f", res.avgSpeedMbps)} MB/s", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Text(
+                                        "Latest Benchmark Results",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                )
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Average Throughput:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${String.format("%.1f", res.avgSpeedMbps)} MB/s",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Peak Throughput:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${String.format("%.1f", res.peakSpeedMbps)} MB/s", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Peak Throughput:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${String.format("%.1f", res.peakSpeedMbps)} MB/s",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("USB / Wi-Fi Breakdown:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${String.format("%.1f", res.usbAvgMbps)} / ${String.format("%.1f", res.wifiAvgMbps)} MB/s", style = MaterialTheme.typography.bodySmall)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "USB / Wi-Fi Breakdown:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${String.format("%.1f", res.usbAvgMbps)} / ${String.format("%.1f", res.wifiAvgMbps)} MB/s",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Duration / Payload:", style = MaterialTheme.typography.bodySmall)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Duration / Payload:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
                                     val payloadMb = res.bytesTransferred.toLong() / (1024L * 1024L)
-                                    Text("${res.durationMs} ms ($payloadMb MB)", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                            "${res.durationMs} ms ($payloadMb MB)",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
                             }
                         }
@@ -308,43 +521,99 @@ fun SettingsScreen(
                     // Saved Calibration Profile Card
                     uiState.savedCalibration?.let { cal ->
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            modifier = Modifier.fillMaxWidth()
+                                shape = RoundedCornerShape(12.dp),
+                                color =
+                                        MaterialTheme.colorScheme.primaryContainer.copy(
+                                                alpha = 0.4f
+                                        ),
+                                modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Active Calibrated Profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                    Text(
+                                            "Active Calibrated Profile",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                    )
                                     TextButton(
-                                        onClick = { viewModel.clearSavedCalibration() },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                            onClick = { viewModel.clearSavedCalibration() },
+                                            contentPadding =
+                                                    PaddingValues(
+                                                            horizontal = 8.dp,
+                                                            vertical = 0.dp
+                                                    )
                                     ) {
-                                        Text("Clear", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                                        Text(
+                                                "Clear",
+                                                color = MaterialTheme.colorScheme.error,
+                                                style = MaterialTheme.typography.labelSmall
+                                        )
                                     }
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Wi-Fi Streams:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${cal.config.wifiStreamCount ?: 3u}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Wi-Fi Streams:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${cal.config.wifiStreamCount ?: 3u}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
                                     Text("Chunk Size:", style = MaterialTheme.typography.bodySmall)
-                                    val mb = (cal.config.chunkSizeBytes?.toLong() ?: (2L * 1024L * 1024L)) / (1024L * 1024L)
-                                    Text("$mb MiB", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    val mb =
+                                            (cal.config.chunkSizeBytes?.toLong()
+                                                    ?: (2L * 1024L * 1024L)) / (1024L * 1024L)
+                                    Text(
+                                            "$mb MiB",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Window Preset:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${cal.config.wifiWindowPreset ?: "Balanced"}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Window Preset:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${cal.config.wifiWindowPreset ?: "Balanced"}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                    )
                                 }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Expected Speed:", style = MaterialTheme.typography.bodySmall)
-                                    Text("${String.format("%.1f", cal.expectedSpeedMbps)} MB/s", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                            "Expected Speed:",
+                                            style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                            "${String.format("%.1f", cal.expectedSpeedMbps)} MB/s",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                             }
                         }
@@ -356,40 +625,77 @@ fun SettingsScreen(
         // 5. Core Engine Information
         item {
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors =
+                            CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        "About TurboTransfer",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                            "About TurboTransfer",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
                     )
 
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Core Architecture:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("Native Rust / Tokio Async", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                        "Core Architecture:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                        "Native Rust / Tokio Async",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold
+                                )
                             }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Processor Platform:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${Build.HARDWARE} (${Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"})", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                        "Processor Platform:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                        "${Build.HARDWARE} (${Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"})",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace
+                                )
                             }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Zero-Copy Engine:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("Enabled (Ring Buffers)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                        "Zero-Copy Engine:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                        "Enabled (Ring Buffers)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                )
                             }
                         }
                     }
@@ -399,49 +705,53 @@ fun SettingsScreen(
     }
     if (showBenchmarkHelpDialog) {
         AlertDialog(
-            onDismissRequest = { showBenchmarkHelpDialog = false },
-            icon = { Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-            title = {
-                Text(
-                    "Benchmark & Calibration Guide",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "1. Trigger Receive Mode First",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                onDismissRequest = { showBenchmarkHelpDialog = false },
+                icon = {
+                    Icon(
+                            Icons.Default.Info,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
                     )
+                },
+                title = {
                     Text(
-                        "Before starting a benchmark, the receiving device must be actively listening on port 9876:\n" +
-                        "• Desktop TUI: Press [2] on the main menu to enter Receive Files mode.\n" +
-                        "• Android Phone: Switch to the Receive tab and tap 'Start Receive Mode'.",
-                        style = MaterialTheme.typography.bodySmall
+                            "Benchmark & Calibration Guide",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
                     )
-                    Text(
-                        "2. Dual-Channel Multipath (USB + Wi-Fi)",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        "For combined multipath throughput, specify both comma-separated addresses in the Peer Address field:\n" +
-                        "e.g. 127.0.0.1:9876, 192.168.1.25:9876\n" +
-                        "• 127.0.0.1:9876 routes through ADB USB tunnel.\n" +
-                        "• The LAN IP routes over 5 GHz Wi-Fi Direct.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                                "1. Trigger Receive Mode First",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                                "Before starting a benchmark, the receiving device must be actively listening on port 9876:\n" +
+                                        "• Desktop TUI: Press [2] on the main menu to enter Receive Files mode.\n" +
+                                        "• Android Phone: Switch to the Receive tab and tap 'Start Receive Mode'.",
+                                style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                                "2. Dual-Channel Multipath (USB + Wi-Fi)",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                                "For combined multipath throughput, specify both comma-separated addresses in the Peer Address field:\n" +
+                                        "e.g. 127.0.0.1:9876, 192.168.1.25:9876\n" +
+                                        "• 127.0.0.1:9876 routes through ADB USB tunnel.\n" +
+                                        "• The LAN IP routes over 5 GHz Wi-Fi Direct.",
+                                style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showBenchmarkHelpDialog = false }) { Text("Got it") }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showBenchmarkHelpDialog = false }) {
-                    Text("Got it")
-                }
-            }
         )
     }
 }

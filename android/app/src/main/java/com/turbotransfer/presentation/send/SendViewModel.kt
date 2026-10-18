@@ -1,7 +1,10 @@
 package com.turbotransfer.presentation.send
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.turbotransfer.UriUtils
 import com.turbotransfer.core.common.Resource
 import com.turbotransfer.data.repository.DiscoveryRepositoryImpl
 import com.turbotransfer.data.repository.HotspotRepositoryImpl
@@ -10,6 +13,7 @@ import com.turbotransfer.domain.model.SelectedFileInfo
 import com.turbotransfer.domain.model.TransferStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -76,6 +80,50 @@ constructor(
         }
     }
 
+    fun processSelectedUris(context: Context, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isResolvingFiles = true) }
+            try {
+                val items = UriUtils.resolveSelectedUris(context, uris)
+                if (items.isNotEmpty()) {
+                    addFilesToQueue(items)
+                } else {
+                    _uiState.update {
+                        it.copy(userMessage = "No files could be resolved. Check storage access.")
+                    }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(userMessage = e.message ?: "Failed to resolve files") }
+            } finally {
+                _uiState.update { it.copy(isResolvingFiles = false) }
+            }
+        }
+    }
+
+    fun processSelectedFolder(context: Context, treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isResolvingFiles = true) }
+            try {
+                val items = UriUtils.resolveDirectoryUri(context, treeUri)
+                if (items.isNotEmpty()) {
+                    addFilesToQueue(items)
+                    _uiState.update {
+                        it.copy(userMessage = "Added ${items.size} file(s) from folder")
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(userMessage = "No readable files in selected folder")
+                    }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(userMessage = e.message ?: "Failed to resolve folder") }
+            } finally {
+                _uiState.update { it.copy(isResolvingFiles = false) }
+            }
+        }
+    }
+
     fun clearQueue() {
         batchTransferJob?.cancel()
         _uiState.update {
@@ -127,7 +175,8 @@ constructor(
 
                     while (_uiState.value.transferQueue.isNotEmpty()) {
                         val item = _uiState.value.transferQueue.first()
-                        val currentIndex = fullBatch.indexOfFirst { it.path == item.path }.coerceAtLeast(0)
+                        val currentIndex =
+                                fullBatch.indexOfFirst { it.path == item.path }.coerceAtLeast(0)
                         _uiState.update { it.copy(currentQueueIndex = currentIndex) }
                         transferRepository.updateCurrentQueueIndex(currentIndex)
                         val res =

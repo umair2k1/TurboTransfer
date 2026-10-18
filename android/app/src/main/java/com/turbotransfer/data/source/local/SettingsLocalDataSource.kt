@@ -18,6 +18,7 @@ class SettingsLocalDataSource @Inject constructor(
     private val keyAutoWakeLock = "auto_wake_lock"
     private val keyDestDir = "dest_dir"
     private val keyAutoAcceptTransfers = "auto_accept_transfers"
+    private val keyManageStorageDontAskAgain = "manage_storage_dont_ask_again"
 
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
@@ -64,5 +65,13 @@ class SettingsLocalDataSource @Inject constructor(
 
     fun setAutoAcceptTransfers(enabled: Boolean) {
         prefs.edit().putBoolean(keyAutoAcceptTransfers, enabled).apply()
+    }
+
+    fun isManageStorageDontAskAgain(): Boolean {
+        return prefs.getBoolean(keyManageStorageDontAskAgain, false)
+    }
+
+    fun setManageStorageDontAskAgain(dontAsk: Boolean) {
+        prefs.edit().putBoolean(keyManageStorageDontAskAgain, dontAsk).apply()
     }
 }

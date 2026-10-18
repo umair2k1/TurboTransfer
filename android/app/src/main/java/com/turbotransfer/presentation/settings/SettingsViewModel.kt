@@ -5,16 +5,18 @@ import androidx.lifecycle.viewModelScope
 import com.turbotransfer.data.repository.DiscoveryRepositoryImpl
 import com.turbotransfer.data.repository.SettingsRepositoryImpl
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 import uniffi.turbotransfer_core.*
 
 @HiltViewModel
-class SettingsViewModel @Inject constructor(
-    private val settingsRepository: SettingsRepositoryImpl,
-    private val discoveryRepository: DiscoveryRepositoryImpl
+class SettingsViewModel
+@Inject
+constructor(
+        private val settingsRepository: SettingsRepositoryImpl,
+        private val discoveryRepository: DiscoveryRepositoryImpl
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -23,9 +25,10 @@ class SettingsViewModel @Inject constructor(
     init {
         _uiState.update {
             it.copy(
-                deviceName = settingsRepository.getDeviceName(),
-                prefer5Ghz = settingsRepository.is5GhzPreferred(),
-                autoWakeLock = settingsRepository.isAutoWakeLockEnabled()
+                    deviceName = settingsRepository.getDeviceName(),
+                    prefer5Ghz = settingsRepository.is5GhzPreferred(),
+                    autoWakeLock = settingsRepository.isAutoWakeLockEnabled(),
+                    isManageStorageDontAskAgain = settingsRepository.isManageStorageDontAskAgain()
             )
         }
         loadSavedCalibration("")
@@ -34,12 +37,18 @@ class SettingsViewModel @Inject constructor(
             discoveryRepository.observeReceiverDiscovery().collect { receiver ->
                 if (receiver != null) {
                     _uiState.update { current ->
-                        if (current.targetAddress.isBlank() || current.targetAddress == "127.0.0.1:9876" || !current.targetAddress.contains(",")) {
-                            val combined = if (receiver.address != "127.0.0.1:9876" && !receiver.address.contains("127.0.0.1")) {
-                                "127.0.0.1:9876, ${receiver.address}"
-                            } else {
-                                receiver.address
-                            }
+                        if (current.targetAddress.isBlank() ||
+                                        current.targetAddress == "127.0.0.1:9876" ||
+                                        !current.targetAddress.contains(",")
+                        ) {
+                            val combined =
+                                    if (receiver.address != "127.0.0.1:9876" &&
+                                                    !receiver.address.contains("127.0.0.1")
+                                    ) {
+                                        "127.0.0.1:9876, ${receiver.address}"
+                                    } else {
+                                        receiver.address
+                                    }
                             current.copy(targetAddress = combined)
                         } else {
                             current
@@ -65,6 +74,20 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(autoWakeLock = enabled) }
     }
 
+    fun refreshStoragePermission(hasAccess: Boolean) {
+        _uiState.update {
+            it.copy(
+                    isAllFilesAccessGranted = hasAccess,
+                    isManageStorageDontAskAgain = settingsRepository.isManageStorageDontAskAgain()
+            )
+        }
+    }
+
+    fun setManageStorageDontAskAgain(dontAsk: Boolean) {
+        settingsRepository.setManageStorageDontAskAgain(dontAsk)
+        _uiState.update { it.copy(isManageStorageDontAskAgain = dontAsk) }
+    }
+
     fun setTargetAddress(address: String) {
         _uiState.update { it.copy(targetAddress = address) }
         loadSavedCalibration(address)
@@ -75,25 +98,24 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isBenchmarking = true) }
             try {
-                val res = runBenchmark(
-                    targetDeviceId = null,
-                    address = addr.takeIf { it.isNotBlank() },
-                    transportPref = FfiTransportPreference.COMBINED,
-                    sizeMb = 250u
-                )
+                val res =
+                        runBenchmark(
+                                targetDeviceId = null,
+                                address = addr.takeIf { it.isNotBlank() },
+                                transportPref = FfiTransportPreference.COMBINED,
+                                sizeMb = 250u
+                        )
                 _uiState.update {
                     it.copy(
-                        isBenchmarking = false,
-                        benchmarkResult = res,
-                        userMessage = "Benchmark complete: ${String.format("%.1f", res.avgSpeedMbps)} MB/s"
+                            isBenchmarking = false,
+                            benchmarkResult = res,
+                            userMessage =
+                                    "Benchmark complete: ${String.format("%.1f", res.avgSpeedMbps)} MB/s"
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(
-                        isBenchmarking = false,
-                        userMessage = "Benchmark error: ${e.message}"
-                    )
+                    it.copy(isBenchmarking = false, userMessage = "Benchmark error: ${e.message}")
                 }
             }
         }
@@ -104,31 +126,31 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isCalibrating = true, calibrationProgress = null) }
             try {
-                val callback = object : FfiCalibrationProgressCallback {
-                    override fun onProgress(update: FfiCalibrationProgressUpdate) {
-                        _uiState.update { it.copy(calibrationProgress = update) }
-                    }
-                }
-                val res = runCalibration(
-                    targetDeviceId = null,
-                    address = addr.takeIf { it.isNotBlank() },
-                    callback = callback
-                )
+                val callback =
+                        object : FfiCalibrationProgressCallback {
+                            override fun onProgress(update: FfiCalibrationProgressUpdate) {
+                                _uiState.update { it.copy(calibrationProgress = update) }
+                            }
+                        }
+                val res =
+                        runCalibration(
+                                targetDeviceId = null,
+                                address = addr.takeIf { it.isNotBlank() },
+                                callback = callback
+                        )
                 val saved = getSavedCalibration(addr.takeIf { it.isNotBlank() } ?: "")
                 _uiState.update {
                     it.copy(
-                        isCalibrating = false,
-                        calibrationResult = res,
-                        savedCalibration = saved,
-                        userMessage = "Calibration complete! Optimal speed: ${String.format("%.1f", res.bestSpeedMbps)} MB/s"
+                            isCalibrating = false,
+                            calibrationResult = res,
+                            savedCalibration = saved,
+                            userMessage =
+                                    "Calibration complete! Optimal speed: ${String.format("%.1f", res.bestSpeedMbps)} MB/s"
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(
-                        isCalibrating = false,
-                        userMessage = "Calibration error: ${e.message}"
-                    )
+                    it.copy(isCalibrating = false, userMessage = "Calibration error: ${e.message}")
                 }
             }
         }
@@ -152,7 +174,9 @@ class SettingsViewModel @Inject constructor(
     fun clearSavedCalibration(targetKey: String? = null) {
         val key = (targetKey ?: _uiState.value.targetAddress).takeIf { it.isNotBlank() } ?: ""
         clearSavedCalibration(key)
-        _uiState.update { it.copy(savedCalibration = null, userMessage = "Saved calibration cleared") }
+        _uiState.update {
+            it.copy(savedCalibration = null, userMessage = "Saved calibration cleared")
+        }
     }
 
     fun clearUserMessage() {

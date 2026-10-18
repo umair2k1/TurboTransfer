@@ -4,7 +4,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -20,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -31,13 +29,11 @@ import com.turbotransfer.UriUtils
 import com.turbotransfer.presentation.components.AdvancedOptionsBottomSheet
 import com.turbotransfer.presentation.components.QrCodeDialog
 import com.turbotransfer.presentation.components.SelectedFileItemChip
+import com.turbotransfer.presentation.components.StoragePermissionUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SendScreen(
-    viewModel: SendViewModel = hiltViewModel(),
-    onNavigateToTransfer: () -> Unit = {}
-) {
+fun SendScreen(viewModel: SendViewModel = hiltViewModel(), onNavigateToTransfer: () -> Unit = {}) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -50,61 +46,126 @@ fun SendScreen(
         }
     }
 
-    val multiDocLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        val items = UriUtils.resolveSelectedUris(context, uris)
-        if (items.isNotEmpty()) {
-            viewModel.addFilesToQueue(items)
-        }
-    }
-
-    val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
-        treeUri?.let {
-            val items = UriUtils.resolveDirectoryUri(context, it)
-            if (items.isNotEmpty()) {
-                viewModel.addFilesToQueue(items)
-                Toast.makeText(context, "Added ${items.size} file(s) from folder", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, "No readable files in selected folder", Toast.LENGTH_SHORT).show()
+    val multiDocLauncher =
+            rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
+                    uris ->
+                if (uris.isNotEmpty()) {
+                    viewModel.processSelectedUris(context, uris)
+                }
             }
-        }
+
+    val folderLauncher =
+            rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri
+                ->
+                treeUri?.let { viewModel.processSelectedFolder(context, it) }
+            }
+
+    if (uiState.isResolvingFiles) {
+        AlertDialog(
+                onDismissRequest = {},
+                title = {
+                    Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp
+                        )
+                        Text("Resolving Files...")
+                    }
+                },
+                text = {
+                    Text(
+                            "Analyzing and preparing selected content for transfer. Direct streaming will be used if permissions allow.",
+                            style = MaterialTheme.typography.bodySmall
+                    )
+                },
+                confirmButton = {}
+        )
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
     ) {
         // 1. Header with Options Action Button
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
                     Text(
-                        "Send Content",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
+                            "Send Content",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "Choose files or directories to transfer",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Choose files or directories to transfer",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                IconButton(
-                    onClick = { showOptionsSheet = true },
-                    modifier = Modifier.size(40.dp)
-                ) {
+                IconButton(onClick = { showOptionsSheet = true }, modifier = Modifier.size(40.dp)) {
                     Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "Connection Options",
-                        tint = MaterialTheme.colorScheme.primary
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Connection Options",
+                            tint = MaterialTheme.colorScheme.primary
                     )
+                }
+            }
+        }
+        // Storage Access Warning Banner if permission not granted
+        if (!StoragePermissionUtils.hasAllFilesAccess()) {
+            item {
+                Surface(
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                            modifier = Modifier.fillMaxWidth().padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(24.dp)
+                            )
+                            Column {
+                                Text(
+                                        "All Files Access Not Granted",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                        "Files must be cached before transfer. Large files may fail if phone storage is low.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color =
+                                                MaterialTheme.colorScheme.onErrorContainer.copy(
+                                                        alpha = 0.8f
+                                                )
+                                )
+                            }
+                        }
+                        TextButton(
+                                onClick = {
+                                    StoragePermissionUtils.openAllFilesAccessSettings(context)
+                                }
+                        ) { Text("Grant", fontWeight = FontWeight.Bold) }
+                    }
                 }
             }
         }
@@ -112,89 +173,93 @@ fun SendScreen(
         // 2. Primary Selection Cards (Files vs Folder)
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Select Files Card
                 ElevatedCard(
-                    onClick = { multiDocLauncher.launch(arrayOf("*/*")) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        onClick = { multiDocLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp),
+                        colors =
+                                CardDefaults.elevatedCardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(52.dp)
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(52.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Default.CloudUpload,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(28.dp)
+                                        Icons.Default.CloudUpload,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(28.dp)
                                 )
                             }
                         }
                         Text(
-                            "Select Files",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                                "Select Files",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Pick photos, videos, or documents",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                                "Pick photos, videos, or documents",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                         )
                     }
                 }
 
                 // Select Folder Card
                 ElevatedCard(
-                    onClick = { folderLauncher.launch(null) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        onClick = { folderLauncher.launch(null) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(20.dp),
+                        colors =
+                                CardDefaults.elevatedCardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            modifier = Modifier.size(52.dp)
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.size(52.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Default.Folder,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    modifier = Modifier.size(28.dp)
+                                        Icons.Default.Folder,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(28.dp)
                                 )
                             }
                         }
                         Text(
-                            "Select Folder",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                                "Select Folder",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Send entire directory recursively",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                                "Send entire directory recursively",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -206,39 +271,39 @@ fun SendScreen(
             val totalBytes = uiState.transferQueue.sumOf { it.sizeBytes }
             item {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                )
                 ) {
                     Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "${uiState.transferQueue.size} item(s) • ${UriUtils.formatFileSize(totalBytes)}",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                                    "${uiState.transferQueue.size} item(s) • ${UriUtils.formatFileSize(totalBytes)}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
                             )
                             TextButton(
-                                onClick = { viewModel.clearQueue() },
-                                contentPadding = PaddingValues(horizontal = 8.dp)
-                            ) {
-                                Text("Clear All", color = MaterialTheme.colorScheme.error)
-                            }
+                                    onClick = { viewModel.clearQueue() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) { Text("Clear All", color = MaterialTheme.colorScheme.error) }
                         }
 
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(uiState.transferQueue) { fileInfo ->
                                 SelectedFileItemChip(
-                                    fileInfo = fileInfo,
-                                    onRemove = { viewModel.removeFileFromQueue(fileInfo) }
+                                        fileInfo = fileInfo,
+                                        onRemove = { viewModel.removeFileFromQueue(fileInfo) }
                                 )
                             }
                         }
@@ -249,157 +314,174 @@ fun SendScreen(
 
         // 4. Discovered Receiver & Send Action
         val discoveredReceiver = uiState.discoveredReceiver
-        val effectiveAddress = if (uiState.showCustomAddressField && uiState.customAddress.isNotBlank()) {
-            uiState.customAddress
-        } else {
-            discoveredReceiver?.address ?: uiState.customAddress.ifBlank { "127.0.0.1:9876" }
-        }
+        val effectiveAddress =
+                if (uiState.showCustomAddressField && uiState.customAddress.isNotBlank()) {
+                    uiState.customAddress
+                } else {
+                    discoveredReceiver?.address
+                            ?: uiState.customAddress.ifBlank { "127.0.0.1:9876" }
+                }
 
         item {
             if (discoveredReceiver != null) {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF2E7D32).copy(alpha = 0.15f),
-                                    modifier = Modifier.size(44.dp)
+                                        shape = CircleShape,
+                                        color = Color(0xFF2E7D32).copy(alpha = 0.15f),
+                                        modifier = Modifier.size(44.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
-                                            Icons.Default.Computer,
-                                            contentDescription = null,
-                                            tint = Color(0xFF2E7D32),
-                                            modifier = Modifier.size(24.dp)
+                                                Icons.Default.Computer,
+                                                contentDescription = null,
+                                                tint = Color(0xFF2E7D32),
+                                                modifier = Modifier.size(24.dp)
                                         )
                                     }
                                 }
                                 Column {
                                     Text(
-                                        discoveredReceiver.displayName,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold
+                                            discoveredReceiver.displayName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        discoveredReceiver.transport,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontWeight = FontWeight.Medium
+                                            discoveredReceiver.transport,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
 
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0xFF2E7D32).copy(alpha = 0.15f)
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF2E7D32).copy(alpha = 0.15f)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        modifier =
+                                                Modifier.padding(
+                                                        horizontal = 8.dp,
+                                                        vertical = 4.dp
+                                                ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .background(Color(0xFF2E7D32), CircleShape)
+                                            modifier =
+                                                    Modifier.size(6.dp)
+                                                            .background(
+                                                                    Color(0xFF2E7D32),
+                                                                    CircleShape
+                                                            )
                                     )
                                     Text(
-                                        "READY",
-                                        color = Color(0xFF2E7D32),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
+                                            "READY",
+                                            color = Color(0xFF2E7D32),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
                         }
 
                         Button(
-                            onClick = {
-                                viewModel.startBatchTransfer(effectiveAddress) {
-                                    onNavigateToTransfer()
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp),
-                            enabled = uiState.transferQueue.isNotEmpty(),
-                            shape = RoundedCornerShape(16.dp)
+                                onClick = {
+                                    viewModel.startBatchTransfer(effectiveAddress) {
+                                        onNavigateToTransfer()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                enabled = uiState.transferQueue.isNotEmpty(),
+                                shape = RoundedCornerShape(16.dp)
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(
+                                    Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                            )
                             Spacer(modifier = Modifier.width(8.dp))
                             val totalBytes = uiState.transferQueue.sumOf { it.sizeBytes }
                             Text(
-                                if (uiState.transferQueue.isNotEmpty()) {
-                                    "Send ${uiState.transferQueue.size} file(s) (${UriUtils.formatFileSize(totalBytes)})"
-                                } else {
-                                    "Select Files to Send"
-                                },
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
+                                    if (uiState.transferQueue.isNotEmpty()) {
+                                        "Send ${uiState.transferQueue.size} file(s) (${UriUtils.formatFileSize(totalBytes)})"
+                                    } else {
+                                        "Select Files to Send"
+                                    },
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
                             )
                         }
                     }
                 }
             } else {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp),
-                            strokeWidth = 3.dp,
-                            color = MaterialTheme.colorScheme.primary
+                                modifier = Modifier.size(28.dp),
+                                strokeWidth = 3.dp,
+                                color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            "Searching for nearby receiver...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
+                                "Searching for nearby receiver...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
                         )
                         Text(
-                            "Connect USB cable or open TurboTransfer on your PC in the same network",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                                "Connect USB cable or open TurboTransfer on your PC in the same network",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                         )
 
                         if (uiState.transferQueue.isNotEmpty()) {
                             Button(
-                                onClick = {
-                                    viewModel.startBatchTransfer(effectiveAddress) {
-                                        onNavigateToTransfer()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                shape = RoundedCornerShape(14.dp)
+                                    onClick = {
+                                        viewModel.startBatchTransfer(effectiveAddress) {
+                                            onNavigateToTransfer()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                    shape = RoundedCornerShape(14.dp)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                        Icons.AutoMirrored.Filled.Send,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 val totalBytes = uiState.transferQueue.sumOf { it.sizeBytes }
                                 Text("Send Anyway (${UriUtils.formatFileSize(totalBytes)})")
@@ -414,22 +496,19 @@ fun SendScreen(
     // Modal Bottom Sheet for advanced setup
     if (showOptionsSheet) {
         AdvancedOptionsBottomSheet(
-            onDismiss = { showOptionsSheet = false },
-            hotspotActive = uiState.hotspotState.isActive,
-            onToggleHotspot = { viewModel.toggleHotspot() },
-            hotspotCredentials = uiState.hotspotState.credentials,
-            onShowQr = { viewModel.setShowQrDialog(true) },
-            customAddress = uiState.customAddress,
-            onCustomAddressChange = { viewModel.setCustomAddress(it) },
-            primaryIp = uiState.discoveredReceiver?.address ?: ""
+                onDismiss = { showOptionsSheet = false },
+                hotspotActive = uiState.hotspotState.isActive,
+                onToggleHotspot = { viewModel.toggleHotspot() },
+                hotspotCredentials = uiState.hotspotState.credentials,
+                onShowQr = { viewModel.setShowQrDialog(true) },
+                customAddress = uiState.customAddress,
+                onCustomAddressChange = { viewModel.setCustomAddress(it) },
+                primaryIp = uiState.discoveredReceiver?.address ?: ""
         )
     }
 
     val creds = uiState.hotspotState.credentials
     if (uiState.showQrDialog && creds != null) {
-        QrCodeDialog(
-            credentials = creds,
-            onDismiss = { viewModel.setShowQrDialog(false) }
-        )
+        QrCodeDialog(credentials = creds, onDismiss = { viewModel.setShowQrDialog(false) })
     }
 }

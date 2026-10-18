@@ -10,12 +10,10 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
-import java.io.File
-import java.io.FileOutputStream
-import java.io.InputStream
-
 import com.turbotransfer.domain.model.FileCategory
 import com.turbotransfer.domain.model.SelectedFileInfo
+import java.io.File
+import java.io.FileOutputStream
 
 private const val TAG = "UriUtils"
 
@@ -23,7 +21,8 @@ object UriUtils {
 
     fun formatFileSize(bytes: Long): String {
         return when {
-            bytes >= 1024L * 1024L * 1024L -> String.format("%.2f GB", bytes.toDouble() / (1024.0 * 1024.0 * 1024.0))
+            bytes >= 1024L * 1024L * 1024L ->
+                    String.format("%.2f GB", bytes.toDouble() / (1024.0 * 1024.0 * 1024.0))
             bytes >= 1024L * 1024L -> String.format("%.2f MB", bytes.toDouble() / (1024.0 * 1024.0))
             bytes >= 1024L -> String.format("%.1f KB", bytes.toDouble() / 1024.0)
             else -> "$bytes B"
@@ -92,18 +91,35 @@ object UriUtils {
 
             // 2.5 Common public storage direct path match by displayName and size
             if (!isDirectlyReadable && displayName != "Unknown") {
-                val commonDirs = arrayOf(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
-                    Environment.getExternalStorageDirectory()
-                )
+                val commonDirs =
+                        arrayOf(
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_DOWNLOADS
+                                ),
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_MOVIES
+                                ),
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_DOCUMENTS
+                                ),
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_DCIM
+                                ),
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_PICTURES
+                                ),
+                                Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_MUSIC
+                                ),
+                                Environment.getExternalStorageDirectory()
+                        )
                 for (dir in commonDirs) {
                     val candidate = File(dir, displayName)
-                    if (candidate.exists() && candidate.isFile && candidate.canRead() && (sizeBytes == 0L || candidate.length() == sizeBytes)) {
+                    if (candidate.exists() &&
+                                    candidate.isFile &&
+                                    candidate.canRead() &&
+                                    (sizeBytes == 0L || candidate.length() == sizeBytes)
+                    ) {
                         try {
                             java.io.FileInputStream(candidate).use { it.read() }
                             realPath = candidate.absolutePath
@@ -114,15 +130,30 @@ object UriUtils {
                 }
             }
 
-            // 3. Fallback: Stage content stream to application cache for unrestricted POSIX/Rust access
+            // 3. Fallback: Stage content stream to application cache for unrestricted POSIX/Rust
+            // access
             if (!isDirectlyReadable) {
                 try {
+                    val usableSpace = context.cacheDir.usableSpace
+                    val requiredSpace =
+                            if (sizeBytes > 0L) sizeBytes + 50L * 1024L * 1024L
+                            else 100L * 1024L * 1024L
+                    if (usableSpace < requiredSpace) {
+                        Log.e(
+                                TAG,
+                                "Insufficient cache storage to stage file: required $requiredSpace, available $usableSpace"
+                        )
+                        throw IllegalStateException(
+                                "Insufficient phone storage to cache '${displayName}' (${formatFileSize(sizeBytes)} needed, ${formatFileSize(usableSpace)} free). Grant 'All files access' in Settings to transfer directly without caching."
+                        )
+                    }
+
                     val stagingDir = File(context.cacheDir, "transfer_staging").apply { mkdirs() }
                     val safeName = displayName.replace(Regex("[/\\\\:*?\"<>|]"), "_")
                     val targetFile = File(stagingDir, safeName)
-
                     // Re-use if already fully staged
-                    if (!targetFile.exists() || sizeBytes == 0L || targetFile.length() != sizeBytes) {
+                    if (!targetFile.exists() || sizeBytes == 0L || targetFile.length() != sizeBytes
+                    ) {
                         context.contentResolver.openInputStream(uri)?.use { input ->
                             FileOutputStream(targetFile).use { output ->
                                 val buffer = ByteArray(256 * 1024)
@@ -138,10 +169,14 @@ object UriUtils {
                     if (targetFile.exists() && targetFile.length() > 0L) {
                         realPath = targetFile.absolutePath
                         sizeBytes = targetFile.length()
-                        Log.i(TAG, "Staged content to cache for Rust engine: $realPath ($sizeBytes bytes)")
+                        Log.i(
+                                TAG,
+                                "Staged content to cache for Rust engine: $realPath ($sizeBytes bytes)"
+                        )
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to stage content from $uri", e)
+                    if (e is IllegalStateException) throw e
                 }
             } else {
                 if (sizeBytes == 0L && realPath != null) {
@@ -157,17 +192,18 @@ object UriUtils {
 
             return if (realPath != null && File(realPath).exists()) {
                 SelectedFileInfo(
-                    path = realPath,
-                    displayName = displayName,
-                    sizeBytes = sizeBytes,
-                    formattedSize = formatFileSize(sizeBytes),
-                    category = category
+                        path = realPath,
+                        displayName = displayName,
+                        sizeBytes = sizeBytes,
+                        formattedSize = formatFileSize(sizeBytes),
+                        category = category
                 )
             } else {
                 null
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to resolve URI: $uri", e)
+            if (e is IllegalStateException) throw e
             return null
         }
     }
@@ -187,11 +223,12 @@ object UriUtils {
         val result = mutableListOf<SelectedFileInfo>()
         try {
             // 1. Try fast direct POSIX filesystem access first
-            val docId = try {
-                DocumentsContract.getTreeDocumentId(treeUri)
-            } catch (_: Exception) {
-                treeUri.lastPathSegment ?: ""
-            }
+            val docId =
+                    try {
+                        DocumentsContract.getTreeDocumentId(treeUri)
+                    } catch (_: Exception) {
+                        treeUri.lastPathSegment ?: ""
+                    }
 
             var directCollectionSuccess = false
             val candidatePaths = mutableListOf<File>()
@@ -216,21 +253,29 @@ object UriUtils {
                         collectFilesRecursively(dir, result)
                         if (result.isNotEmpty()) {
                             directCollectionSuccess = true
-                            Log.i(TAG, "Successfully resolved ${result.size} files via direct filesystem from $dir")
+                            Log.i(
+                                    TAG,
+                                    "Successfully resolved ${result.size} files via direct filesystem from $dir"
+                            )
                             break
                         }
                     }
                 }
             }
 
-            // 2. If direct filesystem was restricted by Scoped Storage, use Storage Access Framework (SAF) tree query
+            // 2. If direct filesystem was restricted by Scoped Storage, use Storage Access
+            // Framework (SAF) tree query
             if (!directCollectionSuccess) {
-                Log.i(TAG, "Falling back to SAF tree traversal for treeUri: $treeUri (docId=$docId)")
-                val rootDocId = try {
-                    DocumentsContract.getTreeDocumentId(treeUri)
-                } catch (_: Exception) {
-                    DocumentsContract.getDocumentId(treeUri)
-                }
+                Log.i(
+                        TAG,
+                        "Falling back to SAF tree traversal for treeUri: $treeUri (docId=$docId)"
+                )
+                val rootDocId =
+                        try {
+                            DocumentsContract.getTreeDocumentId(treeUri)
+                        } catch (_: Exception) {
+                            DocumentsContract.getDocumentId(treeUri)
+                        }
                 traverseSafTreeRecursively(context, treeUri, rootDocId, result)
                 Log.i(TAG, "SAF tree traversal resolved ${result.size} files")
             }
@@ -241,21 +286,23 @@ object UriUtils {
     }
 
     private fun traverseSafTreeRecursively(
-        context: Context,
-        treeUri: Uri,
-        parentDocId: String,
-        result: MutableList<SelectedFileInfo>
+            context: Context,
+            treeUri: Uri,
+            parentDocId: String,
+            result: MutableList<SelectedFileInfo>
     ) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
-        val projection = arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE,
-            DocumentsContract.Document.COLUMN_SIZE
-        )
+        val projection =
+                arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE
+                )
 
         try {
-            context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+            context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor
+                ->
                 val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -263,7 +310,8 @@ object UriUtils {
 
                 while (cursor.moveToNext()) {
                     val childDocId = if (idCol != -1) cursor.getString(idCol) else continue
-                    val displayName = if (nameCol != -1) cursor.getString(nameCol) ?: "file" else "file"
+                    val displayName =
+                            if (nameCol != -1) cursor.getString(nameCol) ?: "file" else "file"
                     val mimeType = if (mimeCol != -1) cursor.getString(mimeCol) ?: "" else ""
                     val sizeBytes = if (sizeCol != -1) cursor.getLong(sizeCol) else 0L
 
@@ -271,23 +319,42 @@ object UriUtils {
                         // Recurse into subdirectory
                         traverseSafTreeRecursively(context, treeUri, childDocId, result)
                     } else {
-                        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId)
+                        val docUri =
+                                DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId)
                         val fileInfo = resolveSelectedFile(context, docUri)
                         if (fileInfo != null) {
                             result.add(fileInfo)
                         } else {
                             // Stage fallback
                             try {
-                                val stagingDir = File(context.cacheDir, "transfer_staging").apply { mkdirs() }
+                                val usableSpace = context.cacheDir.usableSpace
+                                val requiredSpace =
+                                        if (sizeBytes > 0L) sizeBytes + 50L * 1024L * 1024L
+                                        else 100L * 1024L * 1024L
+                                if (usableSpace < requiredSpace) {
+                                    Log.w(
+                                            TAG,
+                                            "Insufficient storage to stage SAF doc $displayName (available: $usableSpace, needed: $requiredSpace)"
+                                    )
+                                    continue
+                                }
+                                val stagingDir =
+                                        File(context.cacheDir, "transfer_staging").apply {
+                                            mkdirs()
+                                        }
                                 val safeName = displayName.replace(Regex("[/\\\\:*?\"<>|]"), "_")
                                 val targetFile = File(stagingDir, safeName)
 
-                                if (!targetFile.exists() || sizeBytes == 0L || targetFile.length() != sizeBytes) {
+                                if (!targetFile.exists() ||
+                                                sizeBytes == 0L ||
+                                                targetFile.length() != sizeBytes
+                                ) {
                                     context.contentResolver.openInputStream(docUri)?.use { input ->
                                         FileOutputStream(targetFile).use { output ->
                                             val buffer = ByteArray(256 * 1024)
                                             var bytesRead: Int
-                                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                            while (input.read(buffer).also { bytesRead = it } !=
+                                                    -1) {
                                                 output.write(buffer, 0, bytesRead)
                                             }
                                             output.flush()
@@ -298,17 +365,21 @@ object UriUtils {
                                 if (targetFile.exists() && targetFile.length() > 0L) {
                                     val ext = displayName.substringAfterLast('.', "")
                                     result.add(
-                                        SelectedFileInfo(
-                                            path = targetFile.absolutePath,
-                                            displayName = displayName,
-                                            sizeBytes = targetFile.length(),
-                                            formattedSize = formatFileSize(targetFile.length()),
-                                            category = FileCategory.fromExtension(ext)
-                                        )
+                                            SelectedFileInfo(
+                                                    path = targetFile.absolutePath,
+                                                    displayName = displayName,
+                                                    sizeBytes = targetFile.length(),
+                                                    formattedSize =
+                                                            formatFileSize(targetFile.length()),
+                                                    category = FileCategory.fromExtension(ext)
+                                            )
                                     )
                                 }
                             } catch (ex: Exception) {
-                                Log.w(TAG, "Failed to resolve SAF child doc $displayName: ${ex.message}")
+                                Log.w(
+                                        TAG,
+                                        "Failed to resolve SAF child doc $displayName: ${ex.message}"
+                                )
                             }
                         }
                     }
@@ -326,13 +397,13 @@ object UriUtils {
             } else if (file.isFile && file.canRead()) {
                 val ext = file.extension
                 result.add(
-                    SelectedFileInfo(
-                        path = file.absolutePath,
-                        displayName = file.name,
-                        sizeBytes = file.length(),
-                        formattedSize = formatFileSize(file.length()),
-                        category = FileCategory.fromExtension(ext)
-                    )
+                        SelectedFileInfo(
+                                path = file.absolutePath,
+                                displayName = file.name,
+                                sizeBytes = file.length(),
+                                formattedSize = formatFileSize(file.length()),
+                                category = FileCategory.fromExtension(ext)
+                        )
                 )
             }
         }
@@ -342,35 +413,48 @@ object UriUtils {
         try {
             val file = File(filePath)
             if (!file.exists()) {
-                android.widget.Toast.makeText(context, "File does not exist", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(
+                                context,
+                                "File does not exist",
+                                android.widget.Toast.LENGTH_SHORT
+                        )
+                        .show()
                 return
             }
 
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
+            val uri =
+                    androidx.core.content.FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file
+                    )
             val mimeType = getMimeType(filePath)
-            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeType)
-                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
+            val intent =
+                    android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, mimeType)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
             context.startActivity(intent)
         } catch (e: Exception) {
             try {
                 // Direct file fallback
                 val file = File(filePath)
                 val uri = Uri.fromFile(file)
-                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, getMimeType(filePath))
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
+                val intent =
+                        android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, getMimeType(filePath))
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                 context.startActivity(intent)
             } catch (ex: Exception) {
                 Log.e(TAG, "Could not open file: $filePath", ex)
-                android.widget.Toast.makeText(context, "Cannot open file: ${ex.message}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(
+                                context,
+                                "Cannot open file: ${ex.message}",
+                                android.widget.Toast.LENGTH_SHORT
+                        )
+                        .show()
             }
         }
     }
@@ -380,17 +464,22 @@ object UriUtils {
             val file = File(filePath)
             if (!file.exists()) return
 
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
+            val uri =
+                    androidx.core.content.FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file
+                    )
+            val intent =
+                    android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = getMimeType(filePath)
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+            context.startActivity(
+                    android.content.Intent.createChooser(intent, "Share via")
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             )
-            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                type = getMimeType(filePath)
-                putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(android.content.Intent.createChooser(intent, "Share via").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: Exception) {
             Log.e(TAG, "Could not share file: $filePath", e)
         }
@@ -413,7 +502,10 @@ object UriUtils {
                 val relativePath = split.getOrNull(1).orEmpty()
 
                 if ("primary".equals(type, ignoreCase = true)) {
-                    val path = Environment.getExternalStorageDirectory().toString() + "/" + relativePath
+                    val path =
+                            Environment.getExternalStorageDirectory().toString() +
+                                    "/" +
+                                    relativePath
                     if (File(path).exists()) return path
                 } else {
                     // SD Card or secondary storage
@@ -435,10 +527,11 @@ object UriUtils {
                         if (path != null && File(path).exists()) return path
                     }
                     try {
-                        val contentUri = ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/public_downloads"),
-                            id.toLong()
-                        )
+                        val contentUri =
+                                ContentUris.withAppendedId(
+                                        Uri.parse("content://downloads/public_downloads"),
+                                        id.toLong()
+                                )
                         val path = getDataColumn(context, contentUri, null, null)
                         if (path != null && File(path).exists()) return path
                     } catch (e: Exception) {
@@ -453,15 +546,22 @@ object UriUtils {
                 val type = split.getOrNull(0) ?: ""
                 val id = if (split.size > 1) split[1] else split[0]
 
-                val contentUri = when (type.lowercase()) {
-                    "image" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                    "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                    "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-                    else -> MediaStore.Files.getContentUri("external")
-                }
+                val contentUri =
+                        when (type.lowercase()) {
+                            "image" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                            "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                            else -> MediaStore.Files.getContentUri("external")
+                        }
 
-                val path = getDataColumn(context, contentUri, "_id=?", arrayOf(id))
-                    ?: getDataColumn(context, MediaStore.Files.getContentUri("external"), "_id=?", arrayOf(id))
+                val path =
+                        getDataColumn(context, contentUri, "_id=?", arrayOf(id))
+                                ?: getDataColumn(
+                                        context,
+                                        MediaStore.Files.getContentUri("external"),
+                                        "_id=?",
+                                        arrayOf(id)
+                                )
                 if (path != null && File(path).exists()) return path
             }
         }
@@ -479,10 +579,10 @@ object UriUtils {
     }
 
     private fun getDataColumn(
-        context: Context,
-        uri: Uri,
-        selection: String?,
-        selectionArgs: Array<String>?
+            context: Context,
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<String>?
     ): String? {
         var cursor: Cursor? = null
         val column = MediaStore.MediaColumns.DATA
