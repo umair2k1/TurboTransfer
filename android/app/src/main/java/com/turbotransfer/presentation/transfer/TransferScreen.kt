@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -28,9 +29,7 @@ import com.turbotransfer.UriUtils
 import com.turbotransfer.domain.model.TransferStatus
 
 @Composable
-fun TransferScreen(
-    viewModel: TransferViewModel = hiltViewModel()
-) {
+fun TransferScreen(viewModel: TransferViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -45,125 +44,199 @@ fun TransferScreen(
     val activeSession = uiState.activeSession
     val lastCompletedItem = uiState.lastCompletedItem
 
+    val isBatch = uiState.transferQueue.size > 1
+    val totalQueueFiles = uiState.transferQueue.size
+    val currentFileIndex = uiState.currentQueueIndex
+    val totalQueueBytes =
+            remember(uiState.transferQueue) { uiState.transferQueue.sumOf { it.sizeBytes } }
+    val completedPriorBytes =
+            remember(uiState.transferQueue, currentFileIndex) {
+                uiState.transferQueue.take(currentFileIndex).sumOf { it.sizeBytes }
+            }
+    val activeBytes = progress?.bytesTransferred ?: 0L
+    val totalBatchBytesTransferred = completedPriorBytes + activeBytes
+    val batchPercent =
+            if (totalQueueBytes > 0L) {
+                ((totalBatchBytesTransferred.toDouble() / totalQueueBytes.toDouble()) * 100.0)
+                        .coerceIn(0.0, 100.0)
+            } else {
+                0.0
+            }
+    val isBatchActive =
+            isBatch &&
+                    (currentFileIndex < totalQueueFiles &&
+                            (progress != null && progress.status == TransferStatus.IN_PROGRESS))
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
     ) {
         item {
             Text(
-                "Transfer Monitor",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                    "Transfer Monitor",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
             )
         }
 
         // 1. Post-Transfer Completion Summary Card
-        if (lastCompletedItem != null && (progress == null || progress.status != TransferStatus.IN_PROGRESS)) {
+        if (!isBatchActive &&
+                        lastCompletedItem != null &&
+                        (progress == null || progress.status != TransferStatus.IN_PROGRESS)
+        ) {
             val item = lastCompletedItem
-            val isBenchmark = item.fileName.contains("benchmark", ignoreCase = true) || item.fileName.contains("calibration", ignoreCase = true)
+            val isBenchmark =
+                    item.fileName.contains("benchmark", ignoreCase = true) ||
+                            item.fileName.contains("calibration", ignoreCase = true)
             item {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isBenchmark) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
-                    )
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                if (isBenchmark)
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                else MaterialTheme.colorScheme.secondaryContainer
+                                )
                 ) {
                     Column(
-                        modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Icon(
-                                    if (isBenchmark) Icons.Default.Bolt else Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                                        if (isBenchmark) Icons.Default.Bolt
+                                        else Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint =
+                                                if (isBenchmark)
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                else MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                                 Text(
-                                    if (isBenchmark) "⚡ Hardware Link Benchmark Complete!" else "Transfer Complete!",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                                        if (isBenchmark) "⚡ Hardware Link Benchmark Complete!"
+                                        else "Transfer Complete!",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color =
+                                                if (isBenchmark)
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                else MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                             }
-                            IconButton(onClick = { viewModel.dismissCompleted() }, modifier = Modifier.size(24.dp)) {
+                            IconButton(
+                                    onClick = { viewModel.dismissCompleted() },
+                                    modifier = Modifier.size(24.dp)
+                            ) {
                                 Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Close",
-                                    tint = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                                        Icons.Default.Close,
+                                        contentDescription = "Close",
+                                        tint =
+                                                if (isBenchmark)
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                else MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                             }
                         }
 
                         Text(
-                            item.fileName,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                                item.fileName,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color =
+                                        if (isBenchmark)
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                         )
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                "Payload: ${item.formattedSize}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                                    "Payload: ${item.formattedSize}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color =
+                                            if (isBenchmark)
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                            else MaterialTheme.colorScheme.onSecondaryContainer
                             )
                             Text(
-                                "Avg Speed: ${String.format("%.1f MB/s", item.avgSpeedMBps)}",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isBenchmark) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                                    "Avg Speed: ${String.format("%.1f MB/s", item.avgSpeedMBps)}",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color =
+                                            if (isBenchmark)
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                            else MaterialTheme.colorScheme.onSecondaryContainer
                             )
                         }
 
                         if (isBenchmark) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Surface(
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text("USB Link", style = MaterialTheme.typography.labelSmall)
-                                        Text(String.format("%.1f MB/s", item.usbSpeedMBps), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                                "USB Link",
+                                                style = MaterialTheme.typography.labelSmall
+                                        )
+                                        Text(
+                                                String.format("%.1f MB/s", item.usbSpeedMBps),
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.bodyMedium
+                                        )
                                     }
                                 }
                                 Surface(
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text("5 GHz Wi-Fi", style = MaterialTheme.typography.labelSmall)
-                                        Text(String.format("%.1f MB/s", item.wifiSpeedMBps), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                                "5 GHz Wi-Fi",
+                                                style = MaterialTheme.typography.labelSmall
+                                        )
+                                        Text(
+                                                String.format("%.1f MB/s", item.wifiSpeedMBps),
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.bodyMedium
+                                        )
                                     }
                                 }
                             }
 
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                             ) {
                                 AssistChip(
-                                    onClick = {},
-                                    label = { Text("Ephemeral Benchmark Payload (Auto-Cleaned)", fontSize = 11.sp) }
+                                        onClick = {},
+                                        label = {
+                                            Text(
+                                                    "Ephemeral Benchmark Payload (Auto-Cleaned)",
+                                                    fontSize = 11.sp
+                                            )
+                                        }
                                 )
                                 TextButton(onClick = { viewModel.dismissCompleted() }) {
                                     Text("Dismiss")
@@ -172,24 +245,32 @@ fun TransferScreen(
                         } else if (!item.isOutgoing && item.filePath.isNotBlank()) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Button(
-                                    onClick = { UriUtils.openFile(context, item.filePath) },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
+                                        onClick = { UriUtils.openFile(context, item.filePath) },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                            Icons.AutoMirrored.Filled.OpenInNew,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Open File")
                                 }
                                 OutlinedButton(
-                                    onClick = { UriUtils.shareFile(context, item.filePath) },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
+                                        onClick = { UriUtils.shareFile(context, item.filePath) },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                            Icons.Default.Share,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Share")
                                 }
@@ -200,193 +281,336 @@ fun TransferScreen(
             }
         }
 
+        // Overall Batch Queue Progress Card
+        if (isBatch &&
+                        progress != null &&
+                        (progress.status == TransferStatus.IN_PROGRESS ||
+                                progress.status == TransferStatus.PAUSED)
+        ) {
+            item {
+                Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
+                ) {
+                    Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                        Icons.Default.Layers,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                        "Overall Batch Progress",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                    "File ${(currentFileIndex + 1).coerceAtMost(totalQueueFiles)} of $totalQueueFiles",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        LinearProgressIndicator(
+                                progress = { (batchPercent / 100.0).toFloat().coerceIn(0f, 1f) },
+                                modifier =
+                                        Modifier.fillMaxWidth()
+                                                .height(10.dp)
+                                                .clip(RoundedCornerShape(5.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                    "${UriUtils.formatFileSize(totalBatchBytesTransferred)} / ${UriUtils.formatFileSize(totalQueueBytes)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                    String.format(java.util.Locale.US, "%.1f%%", batchPercent),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // 2. Active Transfer Dashboard
-        if (progress != null && (progress.status == TransferStatus.IN_PROGRESS || progress.status == TransferStatus.PAUSED)) {
+        if (progress != null &&
+                        (progress.status == TransferStatus.IN_PROGRESS ||
+                                progress.status == TransferStatus.PAUSED)
+        ) {
             val p = progress
             val totalSpeedMBps = p.aggregateSpeedMBps
             val usbSpeedMBps = p.usbSpeedMBps
             val wifiSpeedMBps = p.wifiSpeedMBps
             val isOutgoing = activeSession?.isOutgoing ?: true
-            val isBenchmark = p.fileName.contains("benchmark", ignoreCase = true) || p.fileName.contains("calibration", ignoreCase = true)
+            val isBenchmark =
+                    p.fileName.contains("benchmark", ignoreCase = true) ||
+                            p.fileName.contains("calibration", ignoreCase = true)
             item {
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors =
+                                CardDefaults.elevatedCardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier.padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            modifier = Modifier.padding(24.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         // Direction Badge & ETA Pill
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                         ) {
                             Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isBenchmark) {
-                                    if (isOutgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
-                                } else {
-                                    if (isOutgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
-                                }
+                                    shape = RoundedCornerShape(10.dp),
+                                    color =
+                                            if (isBenchmark) {
+                                                if (isOutgoing)
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                else MaterialTheme.colorScheme.secondaryContainer
+                                            } else {
+                                                if (isOutgoing)
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                else MaterialTheme.colorScheme.secondaryContainer
+                                            }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        modifier =
+                                                Modifier.padding(
+                                                        horizontal = 10.dp,
+                                                        vertical = 4.dp
+                                                ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Icon(
-                                        imageVector = if (isBenchmark) Icons.Default.Bolt else (if (isOutgoing) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = if (isBenchmark) {
-                                            if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                                        } else Color.Unspecified
+                                            imageVector =
+                                                    if (isBenchmark) Icons.Default.Bolt
+                                                    else
+                                                            (if (isOutgoing)
+                                                                    Icons.Default.ArrowUpward
+                                                            else Icons.Default.ArrowDownward),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp),
+                                            tint =
+                                                    if (isBenchmark) {
+                                                        if (isOutgoing)
+                                                                MaterialTheme.colorScheme.primary
+                                                        else MaterialTheme.colorScheme.secondary
+                                                    } else Color.Unspecified
                                     )
                                     Text(
-                                        if (isBenchmark) {
-                                            if (isOutgoing) "⚡ BENCHMARK PUSH TO PC" else "⚡ BENCHMARK INGESTION FROM PC"
-                                        } else {
-                                            if (isOutgoing) "SENDING TO PC" else "RECEIVING FROM PC"
-                                        },
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold
+                                            if (isBenchmark) {
+                                                if (isOutgoing) "⚡ BENCHMARK PUSH TO PC"
+                                                else "⚡ BENCHMARK INGESTION FROM PC"
+                                            } else {
+                                                if (isOutgoing) "SENDING TO PC"
+                                                else "RECEIVING FROM PC"
+                                            },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
 
                             Text(
-                                "ETA: ${UriUtils.formatEta(p.etaSeconds)}",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.primary
+                                    "ETA: ${UriUtils.formatEta(p.etaSeconds)}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.primary
                             )
                         }
 
                         // File Name
                         Text(
-                            text = p.fileName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                                text = p.fileName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                         )
 
                         // Central Prominent Speed Display
                         Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                String.format("%.1f", totalSpeedMBps),
-                                fontSize = 48.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontFamily = FontFamily.Monospace
+                                    String.format("%.1f", totalSpeedMBps),
+                                    fontSize = 48.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontFamily = FontFamily.Monospace
                             )
                             Text(
-                                if (isBenchmark) "MB/s (Multipath Saturation Throughput)" else "MB/s (Combined Throughput)",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    if (isBenchmark) "MB/s (Multipath Saturation Throughput)"
+                                    else "MB/s (Combined Throughput)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
 
                         // Prominent Overall Batch Progress Bar
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    "${UriUtils.formatFileSize(p.bytesTransferred)} / ${UriUtils.formatFileSize(p.fileSize)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        "${UriUtils.formatFileSize(p.bytesTransferred)} / ${UriUtils.formatFileSize(p.fileSize)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    String.format("%.1f%%", p.percent),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                        String.format("%.1f%%", p.percent),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
                                 )
                             }
                             LinearProgressIndicator(
-                                progress = { (p.percent / 100.0).toFloat().coerceIn(0f, 1f) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(10.dp)
-                                    .clip(RoundedCornerShape(5.dp)),
-                                color = MaterialTheme.colorScheme.primary,
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                    progress = { (p.percent / 100.0).toFloat().coerceIn(0f, 1f) },
+                                    modifier =
+                                            Modifier.fillMaxWidth()
+                                                    .height(10.dp)
+                                                    .clip(RoundedCornerShape(5.dp)),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
                             )
                         }
 
                         // Split Channel Breakdown
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Surface(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
                             ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
                                         Box(
-                                            modifier = Modifier
-                                                .size(8.dp)
-                                                .background(
-                                                    if (usbSpeedMBps > 0.05) Color(0xFF4CAF50) else MaterialTheme.colorScheme.outlineVariant,
-                                                    CircleShape
-                                                )
+                                                modifier =
+                                                        Modifier.size(8.dp)
+                                                                .background(
+                                                                        if (usbSpeedMBps > 0.05)
+                                                                                Color(0xFF4CAF50)
+                                                                        else
+                                                                                MaterialTheme
+                                                                                        .colorScheme
+                                                                                        .outlineVariant,
+                                                                        CircleShape
+                                                                )
                                         )
-                                        Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                        Icon(
+                                                Icons.Default.Usb,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                        )
                                         Text(
-                                            if (isBenchmark) "USB (ADB Tunnel)" else "USB Link",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold
+                                                if (isBenchmark) "USB (ADB Tunnel)" else "USB Link",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold
                                         )
                                     }
                                     Text(
-                                        String.format("%.1f MB/s", usbSpeedMBps),
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontFamily = FontFamily.Monospace
+                                            String.format("%.1f MB/s", usbSpeedMBps),
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontFamily = FontFamily.Monospace
                                     )
                                 }
                             }
 
                             Surface(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
                             ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
                                         Box(
-                                            modifier = Modifier
-                                                .size(8.dp)
-                                                .background(
-                                                    if (wifiSpeedMBps > 0.05) Color(0xFF4CAF50) else MaterialTheme.colorScheme.outlineVariant,
-                                                    CircleShape
-                                                )
+                                                modifier =
+                                                        Modifier.size(8.dp)
+                                                                .background(
+                                                                        if (wifiSpeedMBps > 0.05)
+                                                                                Color(0xFF4CAF50)
+                                                                        else
+                                                                                MaterialTheme
+                                                                                        .colorScheme
+                                                                                        .outlineVariant,
+                                                                        CircleShape
+                                                                )
                                         )
-                                        Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.secondary)
+                                        Icon(
+                                                Icons.Default.Wifi,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = MaterialTheme.colorScheme.secondary
+                                        )
                                         Text(
-                                            if (isBenchmark) "Wi-Fi (5 GHz Direct)" else "5 GHz Wi-Fi",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold
+                                                if (isBenchmark) "Wi-Fi (5 GHz Direct)"
+                                                else "5 GHz Wi-Fi",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold
                                         )
                                     }
                                     Text(
-                                        String.format("%.1f MB/s", wifiSpeedMBps),
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontFamily = FontFamily.Monospace
+                                            String.format("%.1f MB/s", wifiSpeedMBps),
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontFamily = FontFamily.Monospace
                                     )
                                 }
                             }
@@ -394,39 +618,54 @@ fun TransferScreen(
 
                         // Transfer Controls
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             val id = p.transferId
                             if (p.status == TransferStatus.IN_PROGRESS) {
                                 FilledTonalButton(
-                                    onClick = { viewModel.pauseTransfer(id) },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
+                                        onClick = { viewModel.pauseTransfer(id) },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                            Icons.Default.Pause,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Pause")
                                 }
                             } else {
                                 Button(
-                                    onClick = { viewModel.resumeTransfer(id) },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
+                                        onClick = { viewModel.resumeTransfer(id) },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                            Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Resume")
                                 }
                             }
 
                             OutlinedButton(
-                                onClick = { viewModel.cancelTransfer(id) },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                shape = RoundedCornerShape(12.dp)
+                                    onClick = { viewModel.cancelTransfer(id) },
+                                    modifier = Modifier.weight(1f),
+                                    colors =
+                                            ButtonDefaults.outlinedButtonColors(
+                                                    contentColor = MaterialTheme.colorScheme.error
+                                            ),
+                                    shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Cancel")
                             }
@@ -435,46 +674,189 @@ fun TransferScreen(
                 }
             }
         }
-
-        // 3. Idle Standby State Placeholder
-        if ((progress == null || (progress.status != TransferStatus.IN_PROGRESS && progress.status != TransferStatus.PAUSED)) && lastCompletedItem == null) {
+        // Queue Items Status Card
+        if (isBatch &&
+                        progress != null &&
+                        (progress.status == TransferStatus.IN_PROGRESS ||
+                                progress.status == TransferStatus.PAUSED)
+        ) {
             item {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp, horizontal = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                                "Queue Items ($totalQueueFiles)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                        )
+                        uiState.transferQueue.forEachIndexed { idx, qItem ->
+                            val isCurrent = idx == currentFileIndex
+                            val isDone = idx < currentFileIndex
+
+                            Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color =
+                                            if (isCurrent)
+                                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                            else MaterialTheme.colorScheme.surfaceContainerLowest
+                            ) {
+                                Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                    imageVector =
+                                                            when {
+                                                                isDone -> Icons.Default.CheckCircle
+                                                                isCurrent ->
+                                                                        Icons.AutoMirrored.Filled
+                                                                                .ArrowForward
+                                                                else -> Icons.Default.Schedule
+                                                            },
+                                                    contentDescription = null,
+                                                    tint =
+                                                            when {
+                                                                isDone -> Color(0xFF4CAF50)
+                                                                isCurrent ->
+                                                                        MaterialTheme.colorScheme
+                                                                                .primary
+                                                                else ->
+                                                                        MaterialTheme.colorScheme
+                                                                                .outline
+                                                            },
+                                                    modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                    qItem.displayName,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight =
+                                                            if (isCurrent) FontWeight.Bold
+                                                            else FontWeight.Normal,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
+                                        Text(
+                                                when {
+                                                    isDone -> "Completed"
+                                                    isCurrent ->
+                                                            String.format(
+                                                                    java.util.Locale.US,
+                                                                    "%.0f%%",
+                                                                    progress.percent
+                                                            )
+                                                    else -> qItem.formattedSize
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight =
+                                                        if (isCurrent) FontWeight.Bold
+                                                        else FontWeight.Normal,
+                                                color =
+                                                        when {
+                                                            isDone -> Color(0xFF4CAF50)
+                                                            isCurrent ->
+                                                                    MaterialTheme.colorScheme
+                                                                            .primary
+                                                            else ->
+                                                                    MaterialTheme.colorScheme
+                                                                            .onSurfaceVariant
+                                                        }
+                                        )
+                                    }
+
+                                    if (isCurrent) {
+                                        LinearProgressIndicator(
+                                                progress = {
+                                                    (progress.percent / 100.0)
+                                                            .toFloat()
+                                                            .coerceIn(0f, 1f)
+                                                },
+                                                modifier =
+                                                        Modifier.fillMaxWidth()
+                                                                .height(4.dp)
+                                                                .clip(RoundedCornerShape(2.dp)),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                trackColor =
+                                                        MaterialTheme.colorScheme.surfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Idle Standby State Placeholder
+        if ((progress == null ||
+                        (progress.status != TransferStatus.IN_PROGRESS &&
+                                progress.status != TransferStatus.PAUSED)) &&
+                        lastCompletedItem == null
+        ) {
+            item {
+                Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors =
+                                CardDefaults.cardColors(
+                                        containerColor =
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                )
+                ) {
+                    Column(
+                            modifier =
+                                    Modifier.fillMaxWidth()
+                                            .padding(vertical = 48.dp, horizontal = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.size(60.dp)
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.size(60.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Default.Speed,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(30.dp)
+                                        Icons.Default.Speed,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(30.dp)
                                 )
                             }
                         }
                         Text(
-                            "No Active Transfer",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                                "No Active Transfer",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Go to the Send tab to transmit files or start Receive mode to accept incoming files.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                                "Go to the Send tab to transmit files or start Receive mode to accept incoming files.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                         )
                     }
                 }

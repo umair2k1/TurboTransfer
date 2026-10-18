@@ -35,6 +35,18 @@ class TransferViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            transferRepository.batchQueueFlow.collect { queue ->
+                _uiState.update { it.copy(transferQueue = queue) }
+            }
+        }
+
+        viewModelScope.launch {
+            transferRepository.currentQueueIndexFlow.collect { index ->
+                _uiState.update { it.copy(currentQueueIndex = index) }
+            }
+        }
+
+        viewModelScope.launch {
             transferRepository.activeSessionFlow.collectLatest { session ->
                 _uiState.update { it.copy(activeSession = session) }
                 if (session != null) {

@@ -63,7 +63,10 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
                 app.navigate_to(Screen::FileBrowser);
             }
             KeyCode::Enter => {
-                if app.selected_file_path.is_some() {
+                if app.selected_file_path.is_some() || !app.send_queue.is_empty() {
+                    if app.selected_file_path.is_none() {
+                        app.selected_file_path = app.send_queue.first().cloned();
+                    }
                     app.navigate_to(Screen::DeviceSelection);
                 } else {
                     app.refresh_browser_entries();
@@ -102,7 +105,8 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
             }
             KeyCode::Backspace => {
                 if !app.handle_browser_backspace() {
-                    if let Some(parent) = app.browser_current_dir.parent().map(|p| p.to_path_buf()) {
+                    if let Some(parent) = app.browser_current_dir.parent().map(|p| p.to_path_buf())
+                    {
                         app.browser_current_dir = parent;
                         app.refresh_browser_entries();
                     }
@@ -118,7 +122,8 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
             KeyCode::Enter | KeyCode::Right => {
                 app.clear_browser_search();
                 if app.browser_selected_index == 0 {
-                    if let Some(parent) = app.browser_current_dir.parent().map(|p| p.to_path_buf()) {
+                    if let Some(parent) = app.browser_current_dir.parent().map(|p| p.to_path_buf())
+                    {
                         app.browser_current_dir = parent;
                         app.refresh_browser_entries();
                     }
@@ -129,6 +134,9 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
                             app.browser_current_dir = path;
                             app.refresh_browser_entries();
                         } else {
+                            if !app.send_queue.contains(&path) {
+                                app.send_queue.push(path.clone());
+                            }
                             app.selected_file_path = Some(path);
                             app.navigate_to(Screen::DeviceSelection);
                         }
@@ -141,6 +149,27 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
                 } else {
                     app.navigate_to(Screen::SendFiles);
                 }
+            }
+            KeyCode::Tab => {
+                if !app.send_queue.is_empty() {
+                    app.selected_file_path = app.send_queue.first().cloned();
+                    app.navigate_to(Screen::DeviceSelection);
+                }
+            }
+            KeyCode::Char(' ') => {
+                app.toggle_browser_selection();
+            }
+            KeyCode::Char('s') | KeyCode::Char('S')
+                if app.file_search_query.is_empty() && !app.send_queue.is_empty() =>
+            {
+                app.selected_file_path = app.send_queue.first().cloned();
+                app.navigate_to(Screen::DeviceSelection);
+            }
+            KeyCode::Char('c') | KeyCode::Char('C')
+                if app.file_search_query.is_empty() && !app.send_queue.is_empty() =>
+            {
+                app.send_queue.clear();
+                app.status_message = Some("Cleared send queue".to_string());
             }
             KeyCode::Char(c) => {
                 app.handle_browser_type_ahead(c);
@@ -181,7 +210,8 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                app.selected_transport_index = (app.selected_transport_index + 1) % TRANSPORTS.len();
+                app.selected_transport_index =
+                    (app.selected_transport_index + 1) % TRANSPORTS.len();
             }
             KeyCode::Char('1') => app.selected_transport_index = 0,
             KeyCode::Char('2') => app.selected_transport_index = 1,
@@ -228,7 +258,9 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
         Screen::TransferDetails => match key.code {
             KeyCode::Char('p') | KeyCode::Char('P') => app.pause_active(),
             KeyCode::Char('c') | KeyCode::Char('C') => app.cancel_active(),
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => app.navigate_to(Screen::TransferScreen),
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                app.navigate_to(Screen::TransferScreen)
+            }
             _ => {}
         },
 
@@ -271,7 +303,8 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        app.benchmark_transport_index = (app.benchmark_transport_index + 1) % TRANSPORTS.len();
+                        app.benchmark_transport_index =
+                            (app.benchmark_transport_index + 1) % TRANSPORTS.len();
                     }
                     KeyCode::Char('s') | KeyCode::Char('S') => {
                         let idx = BENCHMARK_SIZES
@@ -377,7 +410,6 @@ pub fn handle_key_event(app: &mut AppState, key: KeyEvent) {
             }
             _ => {}
         },
-
     }
 }
 
@@ -434,12 +466,21 @@ mod tests {
 
         // Select directory (index 1) and press Enter
         app.browser_selected_index = 1;
-        let sub_name = app.browser_entries[0].file_name().unwrap().to_str().unwrap().to_string();
+        let sub_name = app.browser_entries[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         handle_key_event(&mut app, make_press_event(KeyCode::Enter));
 
         // Should now be inside that subdirectory
         assert_eq!(
-            app.browser_current_dir.file_name().unwrap().to_str().unwrap(),
+            app.browser_current_dir
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             sub_name
         );
         assert_eq!(app.browser_selected_index, 0);

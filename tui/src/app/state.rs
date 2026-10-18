@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use turbotransfer_core::benchmark::{CalibrationProgressUpdate, CalibrationResult, BenchmarkResult};
-use turbotransfer_core::transfer::{DeviceInfo, TransferProgress, TransferSummary};
+use turbotransfer_core::transfer::{DeviceInfo, TransferProgress, TransferSummary, TransportPreference};
 
 use crate::config::TurboSettings;
 
@@ -120,6 +120,10 @@ pub struct AppState {
 
     // Send Flow state
     pub selected_file_path: Option<PathBuf>,
+    pub send_queue: Vec<PathBuf>,
+    pub current_queue_index: usize,
+    pub target_device_id: Option<Uuid>,
+    pub target_transport_pref: Option<TransportPreference>,
     pub browser_current_dir: PathBuf,
     pub browser_entries: Vec<PathBuf>,
     pub browser_selected_index: usize,
@@ -171,6 +175,10 @@ impl AppState {
             running: true,
 
             selected_file_path: None,
+            send_queue: Vec::new(),
+            current_queue_index: 0,
+            target_device_id: None,
+            target_transport_pref: None,
             browser_current_dir: initial_dir,
             browser_entries: Vec::new(),
             browser_selected_index: 0,
@@ -312,5 +320,85 @@ impl AppState {
     pub fn clear_browser_search(&mut self) {
         self.file_search_query.clear();
         self.last_search_keystroke = None;
+    }
+    /// Toggles file or folder selection in the send queue.
+    pub fn toggle_browser_selection(&mut self) {
+        if self.browser_selected_index == 0 {
+            let mut files = Vec::new();
+            collect_files_recursive(&self.browser_current_dir, &mut files);
+            if files.is_empty() {
+                self.status_message = Some("Current directory contains no readable files".to_string());
+                return;
+            }
+            let all_present = files.iter().all(|f| self.send_queue.contains(f));
+            if all_present {
+                self.send_queue.retain(|f| !files.contains(f));
+                self.status_message = Some(format!("Removed current folder ({} files) from queue", files.len()));
+            } else {
+                for f in files.iter() {
+                    if !self.send_queue.contains(f) {
+                        self.send_queue.push(f.clone());
+                    }
+                }
+                self.status_message = Some(format!("Added current folder ({} files) to queue", files.len()));
+            }
+        } else {
+            let entry_idx = self.browser_selected_index - 1;
+            if let Some(path) = self.browser_entries.get(entry_idx).cloned() {
+                if path.is_dir() {
+                    let mut files = Vec::new();
+                    collect_files_recursive(&path, &mut files);
+                    if files.is_empty() {
+                        self.status_message = Some("Folder contains no readable files".to_string());
+                        return;
+                    }
+                    let all_present = files.iter().all(|f| self.send_queue.contains(f));
+                    if all_present {
+                        self.send_queue.retain(|f| !files.contains(f));
+                        self.status_message = Some(format!("Removed folder '{}' ({} files) from queue", path.file_name().unwrap_or_default().to_string_lossy(), files.len()));
+                    } else {
+                        for f in files.iter() {
+                            if !self.send_queue.contains(f) {
+                                self.send_queue.push(f.clone());
+                            }
+                        }
+                        self.status_message = Some(format!("Added folder '{}' ({} files) to queue", path.file_name().unwrap_or_default().to_string_lossy(), files.len()));
+                    }
+                } else {
+                    if let Some(pos) = self.send_queue.iter().position(|p| p == &path) {
+                        self.send_queue.remove(pos);
+                        self.status_message = Some(format!("Removed '{}' from queue", path.file_name().unwrap_or_default().to_string_lossy()));
+                    } else {
+                        self.send_queue.push(path.clone());
+                        self.status_message = Some(format!("Added '{}' to queue", path.file_name().unwrap_or_default().to_string_lossy()));
+                    }
+                }
+            }
+        }
+        if self.selected_file_path.is_none() {
+            self.selected_file_path = self.send_queue.first().cloned();
+        }
+    }
+
+    /// Returns total bytes in the send queue.
+    pub fn queue_total_bytes(&self) -> u64 {
+        self.send_queue
+            .iter()
+            .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            .sum()
+    }
+}
+
+/// Recursively traverses a directory and collects all readable file paths.
+pub fn collect_files_recursive(dir: &std::path::Path, result: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files_recursive(&path, result);
+            } else if path.is_file() {
+                result.push(path);
+            }
+        }
     }
 }

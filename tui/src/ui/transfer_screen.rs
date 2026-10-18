@@ -8,14 +8,27 @@ use turbotransfer_core::manifest::TransferStatus;
 use crate::app::AppState;
 
 pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Length(4), // Gauge Progress Bar
-            Constraint::Min(8),    // Metrics & Transport Breakdown
-        ])
-        .split(area);
+    let is_queue = app.send_queue.len() > 1;
+    let chunks = if is_queue {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Length(3), // Overall Batch Queue Gauge
+                Constraint::Length(3), // Current File Gauge
+                Constraint::Min(8),    // Metrics & Transport Breakdown
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Length(4), // Single Progress Bar
+                Constraint::Min(8),    // Metrics & Transport Breakdown
+            ])
+            .split(area)
+    };
 
     // Header
     let file_name = app
@@ -100,63 +113,143 @@ pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
     f.render_widget(header_para, chunks[0]);
 
     // Progress percentage & speed calculations
-    let (percent, bytes_transferred, total_bytes, total_mbps, usb_mbps, wifi_mbps, eta_str, duration_secs, usb_bytes, wifi_bytes) =
-        if let Some(p) = &app.active_progress {
-            let eta = p
-                .eta_seconds
-                .map(|s| format!("{}s", s))
-                .unwrap_or_else(|| "--".to_string());
-            (
-                (p.percent.round() as u16).min(100),
-                p.bytes_transferred,
-                p.file_size,
-                p.aggregate_throughput_bps / (1024.0 * 1024.0),
-                p.usb_throughput_bps / (1024.0 * 1024.0),
-                p.wifi_throughput_bps / (1024.0 * 1024.0),
-                eta,
-                p.duration_seconds,
-                p.usb_bytes_transferred,
-                p.wifi_bytes_transferred,
-            )
+    let (
+        percent,
+        bytes_transferred,
+        total_bytes,
+        total_mbps,
+        usb_mbps,
+        wifi_mbps,
+        eta_str,
+        duration_secs,
+        usb_bytes,
+        wifi_bytes,
+    ) = if let Some(p) = &app.active_progress {
+        let eta = p
+            .eta_seconds
+            .map(|s| format!("{}s", s))
+            .unwrap_or_else(|| "--".to_string());
+        (
+            (p.percent.round() as u16).min(100),
+            p.bytes_transferred,
+            p.file_size,
+            p.aggregate_throughput_bps / (1024.0 * 1024.0),
+            p.usb_throughput_bps / (1024.0 * 1024.0),
+            p.wifi_throughput_bps / (1024.0 * 1024.0),
+            eta,
+            p.duration_seconds,
+            p.usb_bytes_transferred,
+            p.wifi_bytes_transferred,
+        )
+    } else {
+        let total = app
+            .selected_file_path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        (0, 0, total, 0.0, 0.0, 0.0, "--".to_string(), 0.0, 0, 0)
+    };
+
+    if is_queue {
+        let total_queue_bytes = app.queue_total_bytes();
+        let completed_prior_bytes: u64 = app
+            .send_queue
+            .iter()
+            .take(app.current_queue_index)
+            .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            .sum();
+        let total_batch_transferred = completed_prior_bytes + bytes_transferred;
+        let batch_percent = if total_queue_bytes > 0 {
+            ((total_batch_transferred as f64 / total_queue_bytes as f64) * 100.0).min(100.0) as u16
         } else {
-            let total = app
-                .selected_file_path
-                .as_ref()
-                .and_then(|p| std::fs::metadata(p).ok())
-                .map(|m| m.len())
-                .unwrap_or(0);
-            (0, 0, total, 0.0, 0.0, 0.0, "--".to_string(), 0.0, 0, 0)
+            0
         };
+        let batch_gauge_label = format!(
+            " Overall: {:.2} MB / {:.2} MB ({}%) ",
+            total_batch_transferred as f64 / (1024.0 * 1024.0),
+            total_queue_bytes as f64 / (1024.0 * 1024.0),
+            batch_percent
+        );
+        let batch_gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title(format!(
+                        " 📦 Batch Queue Progress [File {} of {}] ",
+                        (app.current_queue_index + 1).min(app.send_queue.len()),
+                        app.send_queue.len()
+                    )),
+            )
+            .gauge_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .percent(batch_percent)
+            .label(batch_gauge_label);
+        f.render_widget(batch_gauge, chunks[1]);
 
-    // Gauge Progress Bar
-    let gauge_title = format!(
-        " {:.2} MB / {:.2} MB ({}%) ",
-        bytes_transferred as f64 / (1024.0 * 1024.0),
-        total_bytes as f64 / (1024.0 * 1024.0),
-        if is_completed { 100 } else { percent }
-    );
-    let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Progress "),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(if is_completed {
-                    Color::Green
-                } else {
-                    Color::White
-                })
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .percent(if is_completed { 100 } else { percent })
-        .label(gauge_title);
-    f.render_widget(gauge, chunks[1]);
-
+        let file_gauge_label = format!(
+            " Active: {:.2} MB / {:.2} MB ({}%) ",
+            bytes_transferred as f64 / (1024.0 * 1024.0),
+            total_bytes as f64 / (1024.0 * 1024.0),
+            if is_completed { 100 } else { percent }
+        );
+        let file_gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(format!(" 📄 Active File: {} ", file_name)),
+            )
+            .gauge_style(
+                Style::default()
+                    .fg(if is_completed {
+                        Color::Green
+                    } else {
+                        Color::White
+                    })
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .percent(if is_completed { 100 } else { percent })
+            .label(file_gauge_label);
+        f.render_widget(file_gauge, chunks[2]);
+    } else {
+        // Single File Gauge Progress Bar
+        let gauge_title = format!(
+            " {:.2} MB / {:.2} MB ({}%) ",
+            bytes_transferred as f64 / (1024.0 * 1024.0),
+            total_bytes as f64 / (1024.0 * 1024.0),
+            if is_completed { 100 } else { percent }
+        );
+        let gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" Progress "),
+            )
+            .gauge_style(
+                Style::default()
+                    .fg(if is_completed {
+                        Color::Green
+                    } else {
+                        Color::White
+                    })
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .percent(if is_completed { 100 } else { percent })
+            .label(gauge_title);
+        f.render_widget(gauge, chunks[1]);
+    }
     // Metrics & Transport Breakdown Block
     let metrics_block = Block::default()
         .borders(Borders::ALL)
@@ -205,20 +298,14 @@ pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "  │  Duration: ",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled("  │  Duration: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{:.1}s", duration_secs),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "  │  Total: ",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled("  │  Total: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{:.2} MB", total_bytes as f64 / (1024.0 * 1024.0)),
                     Style::default().fg(Color::White),
@@ -235,7 +322,11 @@ pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
                 ),
                 Span::styled(
                     if bytes_transferred > 0 {
-                        format!("  ({:.1} MB, {:.1}%)", usb_bytes as f64 / (1024.0 * 1024.0), (usb_bytes as f64 / bytes_transferred as f64) * 100.0)
+                        format!(
+                            "  ({:.1} MB, {:.1}%)",
+                            usb_bytes as f64 / (1024.0 * 1024.0),
+                            (usb_bytes as f64 / bytes_transferred as f64) * 100.0
+                        )
                     } else {
                         "".to_string()
                     },
@@ -252,7 +343,11 @@ pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
                 ),
                 Span::styled(
                     if bytes_transferred > 0 {
-                        format!("  ({:.1} MB, {:.1}%)", wifi_bytes as f64 / (1024.0 * 1024.0), (wifi_bytes as f64 / bytes_transferred as f64) * 100.0)
+                        format!(
+                            "  ({:.1} MB, {:.1}%)",
+                            wifi_bytes as f64 / (1024.0 * 1024.0),
+                            (wifi_bytes as f64 / bytes_transferred as f64) * 100.0
+                        )
                     } else {
                         "".to_string()
                     },
@@ -373,6 +468,64 @@ pub fn render_transfer_screen(f: &mut Frame, app: &AppState, area: Rect) {
         ]
     };
 
-    let metrics_para = Paragraph::new(metrics_lines).block(metrics_block);
-    f.render_widget(metrics_para, chunks[2]);
+    let mut lines_to_render = metrics_lines;
+    if is_queue && !is_completed && !is_failed {
+        lines_to_render.push(Line::from(""));
+        lines_to_render.push(Line::from(vec![Span::styled(
+            "   Queue Status:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        for (i, p) in app.send_queue.iter().enumerate() {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            let size_mb = size as f64 / (1024.0 * 1024.0);
+            let line = if i < app.current_queue_index {
+                Line::from(vec![
+                    Span::styled(
+                        "     [✓] ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<30} ({:.2} MB) - Completed", name, size_mb),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            } else if i == app.current_queue_index {
+                Line::from(vec![
+                    Span::styled(
+                        "     [►] ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{:<30} ({:.2} MB) - Transferring ({}%)",
+                            name, size_mb, percent
+                        ),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("     [⏳] ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:<30} ({:.2} MB) - Queued", name, size_mb),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ])
+            };
+            lines_to_render.push(line);
+        }
+    }
+
+    let metrics_para = Paragraph::new(lines_to_render).block(metrics_block);
+    let metrics_chunk = if is_queue { chunks[3] } else { chunks[2] };
+    f.render_widget(metrics_para, metrics_chunk);
 }

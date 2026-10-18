@@ -120,11 +120,16 @@ constructor(
         batchTransferJob?.cancel()
         batchTransferJob =
                 viewModelScope.launch {
+                    val fullBatch = queue.toList()
+                    transferRepository.setBatchQueue(fullBatch)
                     _uiState.update { it.copy(isQueueRunning = true, currentQueueIndex = 0) }
                     onTransferStarted()
 
                     while (_uiState.value.transferQueue.isNotEmpty()) {
                         val item = _uiState.value.transferQueue.first()
+                        val currentIndex = fullBatch.indexOfFirst { it.path == item.path }.coerceAtLeast(0)
+                        _uiState.update { it.copy(currentQueueIndex = currentIndex) }
+                        transferRepository.updateCurrentQueueIndex(currentIndex)
                         val res =
                                 transferRepository.startTransfer(
                                         item.path,

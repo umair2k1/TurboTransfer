@@ -25,17 +25,36 @@ impl AppState {
     }
 
     /// Starts a file transfer to target peer/device and navigates to TransferScreen (§7, §13).
+    /// Starts sequential transfer of files in send_queue to target peer/device (§7, §13).
     pub fn start_send_transfer(
         &mut self,
         file_path: PathBuf,
         target_device_id: Option<Uuid>,
         pref: TransportPreference,
     ) {
-        let path_clone = file_path.clone();
+        if self.send_queue.is_empty() {
+            self.send_queue.push(file_path);
+        }
+        self.current_queue_index = 0;
+        self.target_device_id = target_device_id;
+        self.target_transport_pref = Some(pref);
+        self.start_current_queue_item();
+        self.navigate_to(Screen::TransferScreen);
+    }
+
+    /// Initiates transfer for current queue item.
+    pub fn start_current_queue_item(&mut self) {
+        if self.current_queue_index >= self.send_queue.len() {
+            return;
+        }
+        let file_path = self.send_queue[self.current_queue_index].clone();
+        self.selected_file_path = Some(file_path.clone());
+        let target_device_id = self.target_device_id;
+        let pref = self.target_transport_pref.unwrap_or(TransportPreference::Automatic);
 
         let (tx, rx) = std::sync::mpsc::channel();
         tokio::spawn(async move {
-            let res = start_transfer(path_clone, None, target_device_id, pref, None).await;
+            let res = start_transfer(file_path, None, target_device_id, pref, None).await;
             let _ = tx.send(res.map(|h| h.transfer_id));
         });
 
@@ -43,7 +62,11 @@ impl AppState {
         if let Ok(Ok(tid)) = rx.recv_timeout(std::time::Duration::from_millis(150)) {
             self.active_transfer_id = Some(tid);
             self.active_progress = get_progress(tid);
-            self.status_message = Some("Transfer session connecting...".to_string());
+            self.status_message = Some(format!(
+                "Queue ({}/{}): Connecting...",
+                self.current_queue_index + 1,
+                self.send_queue.len()
+            ));
         } else {
             self.refresh_transfers();
             if let Some(first_active) = self
@@ -54,10 +77,12 @@ impl AppState {
                 self.active_transfer_id = Some(first_active.transfer_id);
                 self.active_progress = get_progress(first_active.transfer_id);
             }
-            self.status_message = Some("Transfer session connecting...".to_string());
+            self.status_message = Some(format!(
+                "Queue ({}/{}): Connecting...",
+                self.current_queue_index + 1,
+                self.send_queue.len()
+            ));
         }
-
-        self.navigate_to(Screen::TransferScreen);
     }
 
     /// Polls Transfer API `get_progress()` on the 250ms tick (§13).
@@ -97,7 +122,15 @@ impl AppState {
         if let Some(id) = self.active_transfer_id {
             if let Some(p) = get_progress(id) {
                 if p.status == TransferStatus::Completed {
-                    self.status_message = Some(format!("Completed: {} (100%)", p.file_name));
+                    if self.current_queue_index + 1 < self.send_queue.len() {
+                        self.current_queue_index += 1;
+                        self.start_current_queue_item();
+                        return;
+                    }
+                    self.status_message = Some(format!(
+                        "Queue complete: {} file(s) transferred successfully",
+                        self.send_queue.len()
+                    ));
                 } else if p.status == TransferStatus::Failed {
                     let err = turbotransfer_core::transfer::get_transfer_error(id)
                         .unwrap_or_else(|| "Unknown error".to_string());

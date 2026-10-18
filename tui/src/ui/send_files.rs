@@ -6,9 +6,11 @@ use ratatui::Frame;
 
 use crate::app::AppState;
 
-pub const SEND_OPTIONS: [(&str, &str, &str); 1] = [
-    ("Browse Filesystem", "Open interactive directory explorer to select files", "B"),
-];
+pub const SEND_OPTIONS: [(&str, &str, &str); 1] = [(
+    "Browse Filesystem",
+    "Open interactive directory explorer to select files",
+    "B",
+)];
 
 pub fn render_send_files(f: &mut Frame, app: &AppState, area: Rect) {
     let chunks = Layout::default()
@@ -35,8 +37,12 @@ pub fn render_send_files(f: &mut Frame, app: &AppState, area: Rect) {
         let (cursor, key_style, title_style, desc_style, bg_style) = if is_selected {
             (
                 " ❯ ",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
                 Style::default().fg(Color::Gray),
                 Style::default().bg(Color::Rgb(35, 38, 48)),
             )
@@ -51,11 +57,21 @@ pub fn render_send_files(f: &mut Frame, app: &AppState, area: Rect) {
         };
 
         let line = Line::from(vec![
-            Span::styled(cursor, if is_selected { Style::default().fg(Color::White).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) }),
+            Span::styled(
+                cursor,
+                if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ),
             Span::styled(format!("[{}] ", hotkey), key_style),
             Span::styled(format!("{:<24}", title), title_style),
             Span::styled(format!(" {}", desc), desc_style),
-        ]).style(bg_style);
+        ])
+        .style(bg_style);
 
         option_lines.push(line);
     }
@@ -71,13 +87,78 @@ pub fn render_send_files(f: &mut Frame, app: &AppState, area: Rect) {
         .title(" Selected Payload ");
 
     let mut preview_lines = Vec::new();
-    if let Some(ref path) = app.selected_file_path {
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    if app.send_queue.len() > 1 {
+        let total_size = app.queue_total_bytes();
+        let size_str = if total_size > 1024 * 1024 * 1024 {
+            format!(
+                "{:.2} GB ({} bytes)",
+                total_size as f64 / (1024.0 * 1024.0 * 1024.0),
+                total_size
+            )
+        } else {
+            format!(
+                "{:.2} MB ({} bytes)",
+                total_size as f64 / (1024.0 * 1024.0),
+                total_size
+            )
+        };
+        preview_lines.push(Line::from(""));
+        preview_lines.push(Line::from(vec![
+            Span::styled("   Batch Queue:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} files selected", app.send_queue.len()),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        preview_lines.push(Line::from(vec![
+            Span::styled("   Total Size:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                size_str,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        preview_lines.push(Line::from(""));
+        for (idx, p) in app.send_queue.iter().take(4).enumerate() {
+            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            preview_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   {}. ", idx + 1),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(fname, Style::default().fg(Color::White)),
+            ]));
+        }
+        if app.send_queue.len() > 4 {
+            preview_lines.push(Line::from(Span::styled(
+                format!("   ... and {} more files", app.send_queue.len() - 4),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        preview_lines.push(Line::from(""));
+        preview_lines.push(Line::from(Span::styled(
+            "   ► Press [Enter] to proceed to Device Selection",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Some(path) = &app.selected_file_path {
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
         let size_str = if let Ok(meta) = std::fs::metadata(path) {
             if meta.is_dir() {
                 "Directory".to_string()
             } else {
-                format!("{:.2} MB ({} bytes)", meta.len() as f64 / (1024.0 * 1024.0), meta.len())
+                format!(
+                    "{:.2} MB ({} bytes)",
+                    meta.len() as f64 / (1024.0 * 1024.0),
+                    meta.len()
+                )
             }
         } else {
             "Unknown size".to_string()
@@ -86,21 +167,42 @@ pub fn render_send_files(f: &mut Frame, app: &AppState, area: Rect) {
         preview_lines.push(Line::from(""));
         preview_lines.push(Line::from(vec![
             Span::styled("   Target Name:  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(file_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                file_name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         preview_lines.push(Line::from(vec![
             Span::styled("   Full Path:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(path.display().to_string(), Style::default().fg(Color::White)),
+            Span::styled(
+                path.display().to_string(),
+                Style::default().fg(Color::White),
+            ),
         ]));
         preview_lines.push(Line::from(vec![
             Span::styled("   Payload Size: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(size_str, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                size_str,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         preview_lines.push(Line::from(""));
-        preview_lines.push(Line::from(Span::styled("   ► Press [Enter] to proceed to Device Selection", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+        preview_lines.push(Line::from(Span::styled(
+            "   ► Press [Enter] to proceed to Device Selection",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )));
     } else {
         preview_lines.push(Line::from(""));
-        preview_lines.push(Line::from(Span::styled("   No file selected yet. Choose an option above or press [B] to browse files.", Style::default().fg(Color::DarkGray))));
+        preview_lines.push(Line::from(Span::styled(
+            "   No file selected yet. Choose an option above or press [B] to browse files.",
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     let preview_para = Paragraph::new(preview_lines).block(file_info_block);

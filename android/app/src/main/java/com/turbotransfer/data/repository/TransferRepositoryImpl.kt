@@ -7,6 +7,7 @@ import com.turbotransfer.core.common.Resource
 import com.turbotransfer.core.util.TransferLockManager
 import com.turbotransfer.data.source.local.SettingsLocalDataSource
 import com.turbotransfer.data.source.rust.RustCoreDataSource
+import com.turbotransfer.domain.model.SelectedFileInfo
 import com.turbotransfer.domain.model.TransferProgressInfo
 import com.turbotransfer.domain.model.TransferSession
 import com.turbotransfer.domain.model.TransferStatus
@@ -58,6 +59,26 @@ open class TransferRepositoryImpl(
 
     private val _isListeningFlow = MutableStateFlow(false)
     open val isListeningFlow: StateFlow<Boolean> = _isListeningFlow.asStateFlow()
+
+    private val _batchQueueFlow = MutableStateFlow<List<SelectedFileInfo>>(emptyList())
+    open val batchQueueFlow: StateFlow<List<SelectedFileInfo>> = _batchQueueFlow.asStateFlow()
+
+    private val _currentQueueIndexFlow = MutableStateFlow(0)
+    open val currentQueueIndexFlow: StateFlow<Int> = _currentQueueIndexFlow.asStateFlow()
+
+    open fun setBatchQueue(files: List<SelectedFileInfo>) {
+        _batchQueueFlow.value = files
+        _currentQueueIndexFlow.value = 0
+    }
+
+    open fun updateCurrentQueueIndex(index: Int) {
+        _currentQueueIndexFlow.value = index
+    }
+
+    open fun clearBatchQueue() {
+        _batchQueueFlow.value = emptyList()
+        _currentQueueIndexFlow.value = 0
+    }
 
     private val _receiveStatusFlow = MutableStateFlow("Idle")
     open val receiveStatusFlow: StateFlow<String> = _receiveStatusFlow.asStateFlow()
