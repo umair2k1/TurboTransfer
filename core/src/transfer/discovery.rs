@@ -256,29 +256,36 @@ pub fn get_devices() -> Vec<DeviceInfo> {
     }
 
     // 2. Probe 5 GHz Hotspot / Wi-Fi Direct Gateway endpoints
-    for &wifi_ip in &["192.168.43.1", "192.168.49.1", "192.168.137.1"] {
-        if seen_ips.contains(wifi_ip) {
+    let mut candidate_gateways: Vec<String> = get_hotspot_probe_ips();
+    for fallback in ["192.168.43.1:9876", "192.168.49.1:9876", "192.168.137.1:9876"] {
+        let fallback_str = fallback.to_string();
+        if !candidate_gateways.contains(&fallback_str) {
+            candidate_gateways.push(fallback_str);
+        }
+    }
+
+    for ep in &candidate_gateways {
+        let (ip_str, port) = ep.split_once(':').unwrap_or((ep.as_str(), "9876"));
+        let port_num = port.parse::<u16>().unwrap_or(9876);
+        if seen_ips.contains(ip_str) {
             continue;
         }
-        if let Ok(stream) = std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from((
-                wifi_ip
-                    .parse::<std::net::Ipv4Addr>()
-                    .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-                9876,
-            )),
-            std::time::Duration::from_millis(60),
-        ) {
-            drop(stream);
-            seen_ips.insert(wifi_ip.to_string());
-            devices.push(DeviceInfo {
-                device_id: Uuid::from_u128(
-                    crate::checksum::compute_xxhash64(wifi_ip.as_bytes()) as u128
-                ),
-                device_name: format!("Android Phone (5 GHz Wi-Fi Hotspot: {})", wifi_ip),
-                transport: "5 GHz Wi-Fi Direct".to_string(),
-                is_connected: true,
-            });
+        if let Ok(ip_addr) = ip_str.parse::<std::net::Ipv4Addr>() {
+            if let Ok(stream) = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from((ip_addr, port_num)),
+                std::time::Duration::from_millis(60),
+            ) {
+                drop(stream);
+                seen_ips.insert(ip_str.to_string());
+                devices.push(DeviceInfo {
+                    device_id: Uuid::from_u128(
+                        crate::checksum::compute_xxhash64(ip_str.as_bytes()) as u128
+                    ),
+                    device_name: format!("Android Phone (5 GHz Wi-Fi Hotspot: {})", ip_str),
+                    transport: "5 GHz Wi-Fi Direct".to_string(),
+                    is_connected: true,
+                });
+            }
         }
     }
 

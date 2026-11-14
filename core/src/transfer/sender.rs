@@ -366,14 +366,15 @@ pub async fn resolve_and_connect_transports_with_streams(
             }
 
             // 2. Connect Wi-Fi Direct channel with bonded sockets if not already connected
-            let is_explicit_loopback = address
+            let is_explicit_single_loopback = address
                 .map(|a| {
-                    a.contains("127.0.0.1")
-                        || a.contains("localhost")
-                        || a.to_lowercase().contains("usb")
+                    !a.contains(',')
+                        && (a == "127.0.0.1:9876" || a == "127.0.0.1" || a == "localhost:9876" || a == "localhost")
+                        && std::env::var("TURBOTRANSFER_FORCE_WIFI").is_err()
+                        && !cfg!(target_os = "android")
                 })
                 .unwrap_or(false);
-            if !wifi_connected && !is_explicit_loopback {
+            if !wifi_connected && !is_explicit_single_loopback {
                 let probe_ips = get_hotspot_probe_ips();
                 for hotspot_ip in &probe_ips {
                     let mut connected_any = false;
@@ -407,6 +408,9 @@ pub async fn resolve_and_connect_transports_with_streams(
             }
         }
         TransportPreference::Automatic => {
+            let mut usb_connected = false;
+            let mut wifi_connected = false;
+
             if let Some(explicit_addr) = address {
                 for single_addr in explicit_addr.split(',') {
                     let trimmed = single_addr.trim();
@@ -427,6 +431,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                             {
                                 transports.push((Box::new(t), true));
                                 transport_names.push("USB (ADB Tunnel)".to_string());
+                                usb_connected = true;
                             }
                         } else {
                             for stream_idx in 1..=stream_count {
@@ -441,6 +446,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                                         "5 GHz Wi-Fi Direct (Stream #{})",
                                         stream_idx
                                     ));
+                                    wifi_connected = true;
                                 }
                             }
                         }
@@ -448,28 +454,18 @@ pub async fn resolve_and_connect_transports_with_streams(
                 }
             }
 
-            if transports.is_empty() {
+            // In Automatic / Multipath mode, if Wi-Fi is not yet connected via explicit address,
+            // probe Wi-Fi hotspot endpoints to bond Wi-Fi with USB
+            if !wifi_connected {
+                let mut probe_ips: Vec<String> = get_hotspot_probe_ips();
+                for fallback in ["192.168.43.1:9876", "192.168.49.1:9876", "192.168.137.1:9876"] {
+                    let fallback_str = fallback.to_string();
+                    if !probe_ips.contains(&fallback_str) {
+                        probe_ips.push(fallback_str);
+                    }
+                }
                 #[cfg(target_os = "android")]
                 {
-                    // Probe USB reverse tunnel
-                    if let Ok(t) = tokio::time::timeout(
-                        tokio::time::Duration::from_millis(800),
-                        TcpTransport::connect(addr),
-                    )
-                    .await
-                    {
-                        if let Ok(transport) = t {
-                            transports.push((Box::new(transport), true));
-                            transport_names.push("USB ADB Reverse Tunnel".to_string());
-                        }
-                    }
-                    // Probe Wi-Fi Direct / Hotspot gateway and ARP peers
-                    let mut probe_ips: Vec<String> = vec![
-                        "192.168.43.1:9876".to_string(),
-                        "192.168.43.2:9876".to_string(),
-                        "192.168.49.1:9876".to_string(),
-                        "192.168.137.1:9876".to_string(),
-                    ];
                     if let Ok(arp_content) = std::fs::read_to_string("/proc/net/arp") {
                         for line in arp_content.lines().skip(1) {
                             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -483,28 +479,46 @@ pub async fn resolve_and_connect_transports_with_streams(
                             }
                         }
                     }
+                }
 
-                    for hotspot_ip in &probe_ips {
-                        let mut connected_any = false;
-                        for stream_idx in 1..=stream_count {
-                            if let Ok(t) = tokio::time::timeout(
-                                tokio::time::Duration::from_millis(500),
-                                TcpTransport::connect(hotspot_ip),
-                            )
-                            .await
-                            {
-                                if let Ok(transport) = t {
-                                    transports.push((Box::new(transport), false));
-                                    transport_names.push(format!(
-                                        "5 GHz Wi-Fi Direct (Stream #{})",
-                                        stream_idx
-                                    ));
-                                    connected_any = true;
-                                }
+                for hotspot_ip in &probe_ips {
+                    let mut connected_any = false;
+                    for stream_idx in 1..=stream_count {
+                        if let Ok(t) = tokio::time::timeout(
+                            tokio::time::Duration::from_millis(500),
+                            TcpTransport::connect(hotspot_ip),
+                        )
+                        .await
+                        {
+                            if let Ok(transport) = t {
+                                transports.push((Box::new(transport), false));
+                                transport_names.push(format!(
+                                    "5 GHz Wi-Fi Direct (Stream #{})",
+                                    stream_idx
+                                ));
+                                connected_any = true;
                             }
                         }
-                        if connected_any {
-                            break;
+                    }
+                    if connected_any {
+                        break;
+                    }
+                }
+            }
+
+            // If neither explicit address nor Wi-Fi connected USB, fallback to USB tunnel
+            if !usb_connected && transports.is_empty() {
+                #[cfg(target_os = "android")]
+                {
+                    if let Ok(t) = tokio::time::timeout(
+                        tokio::time::Duration::from_millis(800),
+                        TcpTransport::connect(addr),
+                    )
+                    .await
+                    {
+                        if let Ok(transport) = t {
+                            transports.push((Box::new(transport), true));
+                            transport_names.push("USB ADB Reverse Tunnel".to_string());
                         }
                     }
                 }
@@ -518,32 +532,6 @@ pub async fn resolve_and_connect_transports_with_streams(
                     } else if let Ok(t) = TcpTransport::connect(addr).await {
                         transports.push((Box::new(t), true));
                         transport_names.push("USB Tunnel".to_string());
-                    }
-
-                    // If USB is already connected or probe hotspot, connect Wi-Fi with bonded streams
-                    let probe_ips = get_hotspot_probe_ips();
-                    for hotspot_ip in &probe_ips {
-                        let mut connected_any = false;
-                        for stream_idx in 1..=stream_count {
-                            if let Ok(t) = tokio::time::timeout(
-                                tokio::time::Duration::from_millis(500),
-                                TcpTransport::connect(hotspot_ip),
-                            )
-                            .await
-                            {
-                                if let Ok(transport) = t {
-                                    transports.push((Box::new(transport), false));
-                                    transport_names.push(format!(
-                                        "5 GHz Wi-Fi Direct (Stream #{})",
-                                        stream_idx
-                                    ));
-                                    connected_any = true;
-                                }
-                            }
-                        }
-                        if connected_any {
-                            break;
-                        }
                     }
                 }
             }

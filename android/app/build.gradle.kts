@@ -10,8 +10,8 @@ android {
     namespace = "com.turbotransfer"
     compileSdk = 34
 
-    val appVersionName = project.findProperty("versionName") as? String ?: "0.2.3"
-    val appVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 14
+    val appVersionName = project.findProperty("versionName") as? String ?: "0.2.7"
+    val appVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 15
 
     defaultConfig {
         applicationId = "com.turbotransfer"

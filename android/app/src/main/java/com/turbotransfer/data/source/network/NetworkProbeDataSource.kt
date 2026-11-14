@@ -4,8 +4,12 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import com.turbotransfer.core.common.DispatcherProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
@@ -56,30 +60,42 @@ class NetworkProbeDataSource @Inject constructor(
             }
         } catch (_: Exception) {}
 
-        // 2. Add subnet candidates ONLY from local active Wi-Fi interfaces (wlan*, p2p*, ap*, softap*)
+        // 2. Add subnet candidates from local active Wi-Fi interfaces (wlan*, p2p*, ap*, softap*, etc.)
         val wifiIps = getLocalWifiIpAddresses()
         for (localIp in wifiIps) {
             val parts = localIp.split(".")
             if (parts.size == 4) {
                 val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
+                val localHost = parts[3].toIntOrNull() ?: 1
+
+                // 2a. High priority: Gateways, common APs
                 candidateIps.add("$prefix.1")
                 candidateIps.add("$prefix.2")
-                candidateIps.add("$prefix.19")
-                candidateIps.add("$prefix.100")
-                candidateIps.add("$prefix.101")
                 candidateIps.add("$prefix.254")
 
-                // Probe nearest 1..35 neighbors in local Wi-Fi subnet
-                for (host in 1..35) {
-                    val ip = "$prefix.$host"
-                    if (ip != localIp) {
-                        candidateIps.add(ip)
+                // 2b. High priority: Common DHCP ranges & hotspot allocations
+                for (h in listOf(50, 51, 52, 53, 54, 55, 100, 101, 102, 103, 104, 105, 150, 200, 225, 238, 19, 20, 21, 22)) {
+                    if (h != localHost) candidateIps.add("$prefix.$h")
+                }
+
+                // 2c. Close neighbors near local host (±20)
+                for (offset in 1..20) {
+                    val h1 = localHost + offset
+                    val h2 = localHost - offset
+                    if (h1 in 1..254 && h1 != localHost) candidateIps.add("$prefix.$h1")
+                    if (h2 in 1..254 && h2 != localHost) candidateIps.add("$prefix.$h2")
+                }
+
+                // 2d. Complete /24 subnet sweep (1..254)
+                for (host in 1..254) {
+                    if (host != localHost) {
+                        candidateIps.add("$prefix.$host")
                     }
                 }
             }
         }
 
-        // 3. Scan ARP table entries associated with wlan interfaces
+        // 3. Scan ARP table entries if accessible (legacy Android / fallback)
         try {
             val arpLines = File("/proc/net/arp").readLines()
             for (line in arpLines.drop(1)) {
@@ -87,7 +103,7 @@ class NetworkProbeDataSource @Inject constructor(
                 if (tokens.size >= 6) {
                     val ip = tokens[0]
                     val dev = tokens[5].lowercase()
-                    if (ip.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) && (dev.startsWith("wlan") || dev.startsWith("p2p") || dev.startsWith("ap"))) {
+                    if (ip.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) && (dev.startsWith("wlan") || dev.startsWith("p2p") || dev.startsWith("ap") || dev.startsWith("swlan"))) {
                         candidateIps.add(ip)
                     }
                 }
@@ -106,14 +122,25 @@ class NetworkProbeDataSource @Inject constructor(
             val parts = localIp.split(".")
             if (parts.size == 4) {
                 val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
+                val localHost = parts[3].toIntOrNull() ?: 1
+
                 candidateIps.add("$prefix.1")
                 candidateIps.add("$prefix.2")
                 candidateIps.add("$prefix.30")
+                candidateIps.add("$prefix.65")
+                candidateIps.add("$prefix.100")
+                candidateIps.add("$prefix.254")
 
-                for (host in 1..35) {
-                    val ip = "$prefix.$host"
-                    if (ip != localIp) {
-                        candidateIps.add(ip)
+                for (offset in 1..20) {
+                    val h1 = localHost + offset
+                    val h2 = localHost - offset
+                    if (h1 in 1..254 && h1 != localHost) candidateIps.add("$prefix.$h1")
+                    if (h2 in 1..254 && h2 != localHost) candidateIps.add("$prefix.$h2")
+                }
+
+                for (host in 1..254) {
+                    if (host != localHost) {
+                        candidateIps.add("$prefix.$host")
                     }
                 }
             }
@@ -137,20 +164,37 @@ class NetworkProbeDataSource @Inject constructor(
         probeIpSet(candidateIps, port)
     }
 
-    private suspend fun probeIpSet(candidateIps: Set<String>, port: Int): String? = withContext(dispatcherProvider.io) {
-        val probeDeferreds = candidateIps.map { targetIp ->
-            async(dispatcherProvider.io) {
+    private suspend fun probeIpSet(candidateIps: Collection<String>, port: Int, timeoutMs: Int = 180): String? = withContext(dispatcherProvider.io) {
+        if (candidateIps.isEmpty()) return@withContext null
+        val result = CompletableDeferred<String>()
+        val parentJob = Job()
+        val scope = CoroutineScope(coroutineContext + parentJob)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(candidateIps.size)
+
+        for (targetIp in candidateIps) {
+            scope.launch(dispatcherProvider.io) {
                 try {
                     Socket().use { socket ->
-                        socket.connect(InetSocketAddress(targetIp, port), 150)
-                        targetIp
+                        socket.connect(InetSocketAddress(targetIp, port), timeoutMs)
+                        if (result.complete(targetIp)) {
+                            parentJob.cancel()
+                        }
                     }
                 } catch (_: Exception) {
-                    null
+                    if (remaining.decrementAndGet() == 0) {
+                        result.completeExceptionally(NoSuchElementException())
+                    }
                 }
             }
         }
-        probeDeferreds.awaitAll().filterNotNull().firstOrNull()
+
+        try {
+            result.await()
+        } catch (_: Exception) {
+            null
+        } finally {
+            parentJob.cancel()
+        }
     }
 
     private fun intToIp(i: Int): String {
@@ -160,7 +204,7 @@ class NetworkProbeDataSource @Inject constructor(
     suspend fun getLocalWifiIpAddresses(): List<String> = withContext(dispatcherProvider.io) {
         getFilteredIpAddresses { name ->
             val lower = name.lowercase()
-            lower.startsWith("wlan") || lower.startsWith("p2p") || lower.startsWith("ap") || lower.startsWith("softap")
+            lower.startsWith("wlan") || lower.startsWith("p2p") || lower.startsWith("ap") || lower.startsWith("softap") || lower.startsWith("swlan") || lower.startsWith("wigig") || lower.contains("wifi")
         }
     }
 
