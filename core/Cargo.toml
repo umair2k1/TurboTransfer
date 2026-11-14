@@ -40,5 +40,9 @@ uniffi = { version = "0.28", features = ["build"] }
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
+[[bin]]
+name = "receiver"
+path = "src/bin/receiver.rs"
+
 [dev-dependencies]
 tempfile = "3.10"

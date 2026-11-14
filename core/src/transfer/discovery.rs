@@ -26,7 +26,12 @@ pub struct DeviceInfo {
     pub is_connected: bool,
 }
 
-pub(crate) fn get_windows_hotspot_probe_ips() -> Vec<String> {
+/// Returns candidate `IP:port` endpoints for the Android hotspot data channel (port 9876).
+///
+/// The hotspot gateway is vendor-assigned (e.g. `192.168.43.1`, `192.168.49.1`), so the
+/// active host gateway is resolved dynamically. Windows uses `netsh`/`ipconfig`, Linux
+/// uses NetworkManager and the kernel routing table.
+pub fn get_hotspot_probe_ips() -> Vec<String> {
     #[allow(unused_mut)]
     let mut ips = Vec::new();
     #[cfg(target_os = "windows")]
@@ -80,8 +85,8 @@ pub(crate) fn get_windows_hotspot_probe_ips() -> Vec<String> {
                         }
                     }
                 }
-                // Also query resolve_windows_all_gateways() to capture all active interface gateways
-                for gw in crate::transport::WifiDirectTransport::resolve_windows_all_gateways() {
+                // Also query resolve_all_gateways() to capture all active interface gateways
+                for gw in crate::transport::WifiDirectTransport::resolve_all_gateways() {
                     let formatted = format!("{}:9876", gw);
                     if !ips.contains(&formatted) {
                         ips.push(formatted);
@@ -98,6 +103,47 @@ pub(crate) fn get_windows_hotspot_probe_ips() -> Vec<String> {
             }
         }
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        let active_ssid = crate::transport::WifiDirectTransport::get_current_wifi_ssid();
+        let hotspot_ssid =
+            crate::transport::WifiDirectTransport::probe_hotspot_control_channel_sync(
+                std::time::Duration::from_millis(150),
+            )
+            .map(|config| config.ssid);
+        let looks_like_hotspot = active_ssid
+            .as_deref()
+            .map(|ssid| {
+                let ssid = ssid.to_lowercase();
+                ssid.is_empty()
+                    || [
+                        "android", "pixel", "galaxy", "turbo", "direct-", "hotspot", "oneplus",
+                        "redmi", "xiaomi", "oppo", "vivo", "realme",
+                    ]
+                    .iter()
+                    .any(|needle| ssid.contains(needle))
+            })
+            .unwrap_or(false);
+        let is_phone_hotspot =
+            (hotspot_ssid.is_some() && hotspot_ssid == active_ssid) || looks_like_hotspot;
+
+        if is_phone_hotspot {
+            for gw in crate::transport::WifiDirectTransport::resolve_all_gateways() {
+                let formatted = format!("{}:9876", gw);
+                if !ips.contains(&formatted) {
+                    ips.push(formatted);
+                }
+            }
+            for fallback in ["192.168.43.1:9876", "192.168.49.1:9876"] {
+                let fallback_str = fallback.to_string();
+                if !ips.contains(&fallback_str) {
+                    ips.push(fallback_str);
+                }
+            }
+        }
+    }
+
     ips
 }
 
@@ -164,7 +210,20 @@ pub fn get_devices() -> Vec<DeviceInfo> {
                     }
                     wifi_ready
                 };
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(target_os = "linux")]
+                let is_wifi_connected = {
+                    match crate::transport::WifiDirectTransport::probe_hotspot_control_channel_sync(
+                        std::time::Duration::from_millis(250),
+                    ) {
+                        Some(config) => {
+                            crate::transport::WifiDirectTransport::get_current_wifi_ssid()
+                                .as_deref()
+                                == Some(config.ssid.as_str())
+                        }
+                        None => false,
+                    }
+                };
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
                 let is_wifi_connected = false;
 
                 let name = if let Some(model) = &d.model {

@@ -93,15 +93,23 @@ impl WifiDirectTransport {
             config.ssid, config.target_ip, config.port
         );
 
-        #[cfg(target_os = "windows")]
+        #[cfg(not(target_os = "android"))]
         {
-            Self::associate_wlan_windows(&config).await?;
+            if let Err(e) = Self::associate_wlan(&config).await {
+                if config.target_ip.is_empty() {
+                    return Err(e);
+                }
+                warn!(
+                    "Wi-Fi hotspot association failed (continuing with target IP {}): {}",
+                    config.target_ip, e
+                );
+            }
             if config.target_ip.is_empty() {
-                config.target_ip = Self::resolve_windows_default_gateway()?;
+                config.target_ip = Self::resolve_default_gateway()?;
             }
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "android")]
         if config.target_ip.is_empty() {
             return Err(TransportError::Other(
                 "Wi-Fi hotspot gateway must be supplied on this platform".into(),
@@ -226,9 +234,9 @@ impl WifiDirectTransport {
             attempts += 1;
             debug!("Reconnection attempt {}/{}", attempts, max_attempts);
 
-            #[cfg(target_os = "windows")]
+            #[cfg(not(target_os = "android"))]
             {
-                let _ = Self::associate_wlan_windows(&self.config).await;
+                let _ = Self::associate_wlan_sync(&self.config);
             }
 
             let addr = format!("{}:{}", self.config.target_ip, self.config.port);
@@ -273,8 +281,26 @@ impl WifiDirectTransport {
         )))
     }
 
+    /// Parses a single JSON line from the Android hotspot control channel.
+    #[cfg(not(target_os = "android"))]
+    fn parse_hotspot_credentials(line: &str) -> Option<WifiDirectConfig> {
+        let val: serde_json::Value = serde_json::from_str(line).ok()?;
+        let ssid = val.get("ssid")?.as_str()?;
+        let passphrase = val.get("passphrase")?.as_str()?;
+        if ssid.is_empty() {
+            return None;
+        }
+        let ip = val
+            .get("ip")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let port = val.get("port").and_then(|p| p.as_u64()).unwrap_or(9876) as u16;
+        Some(WifiDirectConfig::new(ssid, passphrase, ip, port))
+    }
+
     /// Probes the local ADB-forwarded control channel on port 9875 for active hotspot credentials.
-    #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "android"))]
     pub async fn probe_hotspot_control_channel(timeout: Duration) -> Option<WifiDirectConfig> {
         use tokio::io::AsyncBufReadExt;
         let stream = tokio::time::timeout(timeout, TcpStream::connect("127.0.0.1:9875"))
@@ -290,67 +316,74 @@ impl WifiDirectTransport {
         if n == 0 {
             return None;
         }
-        let val: serde_json::Value = serde_json::from_str(&line).ok()?;
-        let ssid = val.get("ssid")?.as_str()?;
-        let passphrase = val.get("passphrase")?.as_str()?;
-        if ssid.is_empty() {
+        Self::parse_hotspot_credentials(&line)
+    }
+
+    /// Blocking variant of [`Self::probe_hotspot_control_channel`] for synchronous callers.
+    #[cfg(not(target_os = "android"))]
+    pub fn probe_hotspot_control_channel_sync(timeout: Duration) -> Option<WifiDirectConfig> {
+        use std::io::{BufRead, BufReader};
+        let addr = SocketAddr::from(([127, 0, 0, 1], 9875));
+        let stream = std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(1000)))
+            .ok()?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).ok()?;
+        if n == 0 {
             return None;
         }
-        let ip = val
-            .get("ip")
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        let port = val.get("port").and_then(|p| p.as_u64()).unwrap_or(9876) as u16;
-        Some(WifiDirectConfig::new(ssid, passphrase, ip, port))
+        Self::parse_hotspot_credentials(&line)
     }
 
     /// Discovers active Android 5 GHz Hotspot credentials via the USB control channel (port 9875).
     /// If Android has not started the hotspot yet, it triggers it via ADB and retries polling.
-    pub async fn discover_android_hotspot(
-        #[allow(unused_variables)] serial: Option<&str>,
-    ) -> Option<WifiDirectConfig> {
-        #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "android"))]
+    pub async fn discover_android_hotspot(serial: Option<&str>) -> Option<WifiDirectConfig> {
+        if let Some(config) = Self::probe_hotspot_control_channel(Duration::from_millis(150)).await
         {
+            info!(
+                "Instant discovery of active Android Direct Hotspot: SSID='{}'",
+                config.ssid
+            );
+            return Some(config);
+        }
+
+        let target_serial = match serial {
+            Some(s) => Some(s.to_string()),
+            None => crate::transport::usb::UsbTransport::list_adb_devices()
+                .ok()?
+                .into_iter()
+                .find(|d| d.state == "device")
+                .map(|d| d.serial),
+        };
+
+        if let Some(ser) = &target_serial {
+            let _ = crate::transport::usb::UsbTransport::setup_adb_forward(ser, 9875, 9875);
+            let _ = crate::transport::usb::UsbTransport::trigger_android_hotspot(ser);
+        }
+
+        for attempt in 1..=20 {
             if let Some(config) =
-                Self::probe_hotspot_control_channel(Duration::from_millis(150)).await
+                Self::probe_hotspot_control_channel(Duration::from_millis(500)).await
             {
                 info!(
-                    "Instant discovery of active Android Direct Hotspot: SSID='{}'",
-                    config.ssid
+                    "Discovered Android Direct Hotspot: SSID='{}', IP='{}:{}'",
+                    config.ssid, config.target_ip, config.port
                 );
                 return Some(config);
             }
-
-            let target_serial = match serial {
-                Some(s) => Some(s.to_string()),
-                None => crate::transport::usb::UsbTransport::list_adb_devices()
-                    .ok()?
-                    .into_iter()
-                    .find(|d| d.state == "device")
-                    .map(|d| d.serial),
-            };
-
-            if let Some(ser) = &target_serial {
-                let _ = crate::transport::usb::UsbTransport::setup_adb_forward(ser, 9875, 9875);
-                let _ = crate::transport::usb::UsbTransport::trigger_android_hotspot(ser);
-            }
-
-            for attempt in 1..=20 {
-                if let Some(config) =
-                    Self::probe_hotspot_control_channel(Duration::from_millis(500)).await
-                {
-                    info!(
-                        "Discovered Android Direct Hotspot: SSID='{}', IP='{}:{}'",
-                        config.ssid, config.target_ip, config.port
-                    );
-                    return Some(config);
-                }
-                if attempt < 20 {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
+            if attempt < 20 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
+        None
+    }
+
+    /// Android peers never discover a host-side hotspot over USB.
+    #[cfg(target_os = "android")]
+    pub async fn discover_android_hotspot(_serial: Option<&str>) -> Option<WifiDirectConfig> {
         None
     }
 
@@ -417,6 +450,670 @@ impl WifiDirectTransport {
     #[cfg(not(target_os = "windows"))]
     pub fn resolve_windows_all_gateways() -> Vec<String> {
         Vec::new()
+    }
+
+    /// Resolves the host Wi-Fi gateway of the Android hotspot after association.
+    ///
+    /// Dispatches to the platform implementation (PowerShell on Windows, `nmcli`/`ip`
+    /// on Linux) so hotspot auto-connect works on every desktop host.
+    pub fn resolve_default_gateway() -> Result<String, TransportError> {
+        #[cfg(target_os = "windows")]
+        {
+            Self::resolve_windows_default_gateway()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::resolve_linux_default_gateway()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            Err(TransportError::Other(
+                "Hotspot gateway resolution is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    /// Resolves all active IPv4 default gateways, Wi-Fi routes first.
+    pub fn resolve_all_gateways() -> Vec<String> {
+        #[cfg(target_os = "windows")]
+        {
+            Self::resolve_windows_all_gateways()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::resolve_linux_all_gateways()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Queries the active host Wi-Fi interface name.
+    pub fn get_wifi_interface_name() -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            Self::get_windows_wifi_interface_name()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::get_linux_wifi_interface_name()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
+    /// Queries the SSID the host Wi-Fi adapter is currently associated with.
+    pub fn get_current_wifi_ssid() -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            Self::get_current_windows_wifi_ssid()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::get_current_linux_wifi_ssid()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
+    /// Associates the host Wi-Fi adapter with the Android hotspot (blocking).
+    pub fn associate_wlan_sync(config: &WifiDirectConfig) -> Result<(), TransportError> {
+        #[cfg(target_os = "windows")]
+        {
+            Self::associate_wlan_windows_sync(config)?;
+            Self::ensure_windows_hotspot_probe_ip(config);
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::associate_wlan_linux_sync(config)?;
+            Self::ensure_linux_hotspot_probe_ip(config);
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            let _ = config;
+            Err(TransportError::Other(
+                "Wi-Fi hotspot association is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    /// Associates the host Wi-Fi adapter with the Android hotspot and waits for the
+    /// DHCP lease / route to settle before the caller dials the hotspot gateway.
+    pub async fn associate_wlan(config: &WifiDirectConfig) -> Result<(), TransportError> {
+        Self::associate_wlan_sync(config)?;
+        // Wait brief grace period for association
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        Self::ensure_hotspot_probe_ip(config);
+        Ok(())
+    }
+
+    /// Ensures the host Wi-Fi adapter has an IP address in the `1..35` range expected
+    /// by the Android receiver discovery probe (`NetworkProbeDataSource`), so the phone
+    /// discovers the host receiver over Wi-Fi when sending from Android to PC.
+    pub fn ensure_hotspot_probe_ip(config: &WifiDirectConfig) {
+        #[cfg(target_os = "linux")]
+        {
+            Self::ensure_linux_hotspot_probe_ip(config);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::ensure_windows_hotspot_probe_ip(config);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            let _ = config;
+        }
+    }
+
+    /// Locates the wireless interface via NetworkManager, falling back to sysfs.
+    #[cfg(target_os = "linux")]
+    fn get_linux_wifi_interface_name() -> Option<String> {
+        use std::process::Command;
+
+        if let Ok(output) = Command::new("nmcli")
+            .args(["-t", "-f", "DEVICE,TYPE", "device", "status"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some((dev, kind)) = line.split_once(':') {
+                    if kind.trim() == "wifi" {
+                        let dev = Self::unescape_nmcli(dev);
+                        if !dev.is_empty() {
+                            return Some(dev);
+                        }
+                    }
+                }
+            }
+        }
+
+        std::fs::read_dir("/sys/class/net")
+            .ok()?
+            .flatten()
+            .find_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("wl") || name.starts_with("wlan") || name.starts_with("ath") {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Decodes nmcli's terse-mode escaping (`\:` for `:`, `\\` for `\`).
+    #[cfg(target_os = "linux")]
+    fn unescape_nmcli(raw: &str) -> String {
+        let mut out = String::with_capacity(raw.len());
+        let mut chars = raw.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Reads the active SSID from NetworkManager, falling back to `iw`.
+    #[cfg(target_os = "linux")]
+    fn get_current_linux_wifi_ssid() -> Option<String> {
+        use std::process::Command;
+
+        if let Ok(output) = Command::new("nmcli")
+            .args([
+                "-t",
+                "-f",
+                "ACTIVE,SSID",
+                "device",
+                "wifi",
+                "list",
+                "--rescan",
+                "no",
+            ])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(rest) = line.strip_prefix("yes:") {
+                    let ssid = Self::unescape_nmcli(rest);
+                    if !ssid.is_empty() {
+                        return Some(ssid);
+                    }
+                }
+            }
+        }
+
+        let iface = Self::get_linux_wifi_interface_name()?;
+        let output = Command::new("iw")
+            .args(["dev", &iface, "link"])
+            .output()
+            .ok()?;
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(ssid) = line.trim().strip_prefix("SSID:") {
+                let ssid = ssid.trim();
+                if !ssid.is_empty() {
+                    return Some(ssid.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Collects IPv4 default gateways on Linux, preferring wireless interfaces.
+    #[cfg(target_os = "linux")]
+    fn resolve_linux_all_gateways() -> Vec<String> {
+        use std::process::Command;
+
+        fn push(target: &mut Vec<String>, exclude: &[String], gateway: &str) {
+            let gateway = gateway.trim();
+            if gateway.parse::<std::net::Ipv4Addr>().is_ok()
+                && !target.iter().any(|g| g == gateway)
+                && !exclude.iter().any(|g| g == gateway)
+            {
+                target.push(gateway.to_string());
+            }
+        }
+
+        fn is_wifi_device(dev: &str) -> bool {
+            dev.starts_with("wl")
+                || dev.starts_with("wlan")
+                || dev.starts_with("ath")
+                || dev.contains("wifi")
+        }
+
+        let mut wifi = Vec::new();
+        let mut other = Vec::new();
+
+        // 1. Per-interface gateway from NetworkManager (works for local-only hotspots).
+        if let Some(iface) = Self::get_linux_wifi_interface_name() {
+            if let Ok(output) = Command::new("nmcli")
+                .args(["-t", "-f", "IP4.GATEWAY", "device", "show", &iface])
+                .output()
+            {
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    if let Some((_, gateway)) = line.split_once(':') {
+                        push(&mut wifi, &other, gateway);
+                    }
+                }
+            }
+        }
+
+        // 2. Kernel routing table, Wi-Fi routes ranked ahead of wired ones.
+        if let Ok(output) = Command::new("ip")
+            .args(["-4", "route", "show", "default"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                let mut gateway = None;
+                let mut dev = "";
+                let mut i = 0;
+                while i < tokens.len() {
+                    match tokens[i] {
+                        "via" if i + 1 < tokens.len() => {
+                            gateway = Some(tokens[i + 1]);
+                            i += 2;
+                        }
+                        "dev" if i + 1 < tokens.len() => {
+                            dev = tokens[i + 1];
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if let Some(gateway) = gateway {
+                    if is_wifi_device(dev) {
+                        push(&mut wifi, &other, gateway);
+                    } else {
+                        push(&mut other, &wifi, gateway);
+                    }
+                }
+            }
+        }
+
+        wifi.extend(other);
+        wifi
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resolve_linux_default_gateway() -> Result<String, TransportError> {
+        Self::resolve_linux_all_gateways()
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                TransportError::Other(
+                    "No active IPv4 default gateway after hotspot association".into(),
+                )
+            })
+    }
+
+    /// Returns true when the SSID currently appears in NetworkManager's scan cache.
+    #[cfg(target_os = "linux")]
+    fn linux_wifi_scan_contains(ssid: &str) -> bool {
+        use std::process::Command;
+
+        let Ok(output) = Command::new("nmcli")
+            .args(["-t", "-f", "SSID", "device", "wifi", "list"])
+            .output()
+        else {
+            return false;
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| Self::unescape_nmcli(line).trim() == ssid)
+    }
+
+    /// Joins the Android hotspot with NetworkManager, then `wpa_cli` as a fallback.
+    #[cfg(target_os = "linux")]
+    pub fn associate_wlan_linux_sync(config: &WifiDirectConfig) -> Result<(), TransportError> {
+        use std::process::Command;
+
+        if config.ssid.is_empty() {
+            return Err(TransportError::Other(
+                "Cannot associate Wi-Fi without an SSID".into(),
+            ));
+        }
+
+        if Self::get_current_linux_wifi_ssid().as_deref() == Some(config.ssid.as_str()) {
+            debug!("Already associated with Wi-Fi hotspot '{}'", config.ssid);
+            return Ok(());
+        }
+
+        let iface = Self::get_linux_wifi_interface_name();
+        let mut last_error = String::new();
+
+        // 1. NetworkManager: retry because a just-started phone AP is often absent
+        //    from the (stale) scan cache on the first probe.
+        for attempt in 1..=3 {
+            // Force a fresh scan before every attempt.
+            let mut rescan = vec!["device", "wifi", "rescan"];
+            if let Some(iface) = &iface {
+                rescan.extend(["ifname", iface.as_str()]);
+            }
+            let _ = Command::new("nmcli").args(&rescan).output();
+
+            // Give the scan a bounded window to discover the hotspot.
+            for _ in 0..8 {
+                if Self::linux_wifi_scan_contains(&config.ssid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+
+            let mut nm_args: Vec<String> = vec![
+                "--wait".into(),
+                "30".into(),
+                "device".into(),
+                "wifi".into(),
+                "connect".into(),
+                config.ssid.clone(),
+            ];
+            if !config.passphrase.is_empty() {
+                nm_args.push("password".into());
+                nm_args.push(config.passphrase.clone());
+            }
+            if let Some(iface) = &iface {
+                nm_args.push("ifname".into());
+                nm_args.push(iface.clone());
+            }
+            let arg_refs: Vec<&str> = nm_args.iter().map(String::as_str).collect();
+            match Command::new("nmcli").args(&arg_refs).output() {
+                Ok(output) if output.status.success() => {
+                    debug!(
+                        "NetworkManager reported association with '{}' (attempt {}/3)",
+                        config.ssid, attempt
+                    );
+                }
+                Ok(output) => {
+                    last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    if last_error.is_empty() {
+                        last_error = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    }
+                }
+                Err(e) => last_error = format!("failed to run nmcli: {e}"),
+            }
+
+            // Activation (DHCP lease, route installation) can lag behind the command.
+            for _ in 0..20 {
+                if Self::get_current_linux_wifi_ssid().as_deref() == Some(config.ssid.as_str()) {
+                    info!("Associated Linux Wi-Fi with hotspot '{}'", config.ssid);
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            debug!(
+                "Association attempt {}/3 with hotspot '{}' is not active yet",
+                attempt, config.ssid
+            );
+        }
+
+        // 2. Reuse an existing saved profile (e.g. nmcli denied a new connection).
+        let mut up_args = vec![
+            "--wait",
+            "30",
+            "connection",
+            "up",
+            "id",
+            config.ssid.as_str(),
+        ];
+        if let Some(iface) = &iface {
+            up_args.extend(["ifname", iface.as_str()]);
+        }
+        let _ = Command::new("nmcli").args(&up_args).output();
+        if Self::get_current_linux_wifi_ssid().as_deref() == Some(config.ssid.as_str()) {
+            info!(
+                "Activated saved Wi-Fi profile for hotspot '{}'",
+                config.ssid
+            );
+            return Ok(());
+        }
+
+        // 3. Raw wpa_supplicant control for hosts without NetworkManager.
+        if let Some(iface) = &iface {
+            if let Err(e) = Self::associate_wlan_wpa_cli(iface, config) {
+                last_error = format!("{last_error}; {e}");
+            } else {
+                for _ in 0..20 {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if Self::get_current_linux_wifi_ssid().as_deref() == Some(config.ssid.as_str())
+                    {
+                        info!("Associated Linux Wi-Fi with hotspot '{}'", config.ssid);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Err(TransportError::Other(format!(
+            "Failed to associate Linux Wi-Fi with hotspot '{}': {}",
+            config.ssid,
+            if last_error.is_empty() {
+                "no Wi-Fi backend available (install NetworkManager or wpa_supplicant)"
+            } else {
+                last_error.as_str()
+            }
+        )))
+    }
+
+    /// Best-effort association through `wpa_cli` for NetworkManager-less hosts.
+    #[cfg(target_os = "linux")]
+    fn associate_wlan_wpa_cli(
+        iface: &str,
+        config: &WifiDirectConfig,
+    ) -> Result<(), TransportError> {
+        use std::process::Command;
+
+        let run = |args: &[&str]| -> Option<String> {
+            let output = Command::new("wpa_cli")
+                .args(["-i", iface])
+                .args(args)
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        };
+
+        let network_id = run(&["add_network"])
+            .ok_or_else(|| TransportError::Other("wpa_cli add_network failed to execute".into()))?;
+        if network_id.is_empty() || !network_id.chars().all(|c| c.is_ascii_digit()) {
+            return Err(TransportError::Other(format!(
+                "wpa_cli add_network failed: {network_id}"
+            )));
+        }
+
+        let ssid = format!("\"{}\"", config.ssid.replace('"', ""));
+        run(&["set_network", &network_id, "ssid", &ssid]);
+        if config.passphrase.is_empty() {
+            run(&["set_network", &network_id, "key_mgmt", "NONE"]);
+        } else {
+            let psk = format!("\"{}\"", config.passphrase.replace('"', ""));
+            run(&["set_network", &network_id, "psk", &psk]);
+        }
+        if run(&["select_network", &network_id]).is_none() {
+            return Err(TransportError::Other(
+                "wpa_cli select_network failed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Ensures the host Wi-Fi adapter has an IP address in the `1..35` range expected
+    /// by the Android receiver discovery probe (`NetworkProbeDataSource`), so the phone
+    /// discovers the host receiver over Wi-Fi when sending from Android to PC.
+    #[cfg(target_os = "linux")]
+    pub fn ensure_linux_hotspot_probe_ip(config: &WifiDirectConfig) {
+        use std::process::Command;
+        use std::net::Ipv4Addr;
+
+        let iface = Self::get_linux_wifi_interface_name();
+
+        let mut gateway_opt = None;
+        for _ in 0..15 {
+            if let Ok(gw) = Self::resolve_linux_default_gateway() {
+                if let Ok(ip) = gw.parse::<Ipv4Addr>() {
+                    gateway_opt = Some(ip);
+                    break;
+                }
+            }
+            // Check if Wi-Fi interface already has an assigned IP to derive the subnet prefix
+            if let Some(ref ifname) = iface {
+                if let Ok(output) = Command::new("ip").args(["-4", "addr", "show", "dev", ifname]).output() {
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    for line in out.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("inet ") {
+                            if let Some(cidr) = trimmed.split_whitespace().nth(1) {
+                                if let Some((ip_str, _)) = cidr.split_once('/') {
+                                    if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+                                        let oct = ip.octets();
+                                        if oct[0] == 10 || (oct[0] == 192 && oct[1] == 168) || (oct[0] == 172 && oct[1] >= 16 && oct[1] <= 31) {
+                                            gateway_opt = Some(ip);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if gateway_opt.is_some() {
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        let Some(gw_ip) = gateway_opt else {
+            warn!("Could not resolve hotspot gateway or local IP for probe IP configuration");
+            return;
+        };
+
+        let octets = gw_ip.octets();
+        let candidate_last: u8 = if octets[3] == 2 { 3 } else { 2 };
+        let candidate_ip = format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], candidate_last);
+        let candidate_cidr = format!("{}/24", candidate_ip);
+
+        if let Some(ref ifname) = iface {
+            if let Ok(output) = Command::new("ip").args(["-4", "addr", "show", "dev", ifname]).output() {
+                let out = String::from_utf8_lossy(&output.stdout);
+                if out.contains(&candidate_ip) {
+                    debug!("Wi-Fi interface {} already has probe IP {}", ifname, candidate_ip);
+                    return;
+                }
+            }
+        }
+
+        // Determine active connection UUID on the Wi-Fi interface, or fall back to SSID
+        let mut connection_target = config.ssid.clone();
+        if let Some(ref ifname) = iface {
+            if let Ok(output) = Command::new("nmcli")
+                .args(["-t", "-f", "UUID,DEVICE", "connection", "show", "--active"])
+                .output()
+            {
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    if let Some((uuid, dev)) = line.split_once(':') {
+                        if dev.trim() == ifname.trim() {
+                            connection_target = uuid.trim().to_string();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Configure static secondary IP on the NetworkManager profile and reactivate
+        let _ = Command::new("nmcli")
+            .args(["connection", "modify", &connection_target, "+ipv4.addresses", &candidate_cidr])
+            .output();
+
+        let _ = Command::new("nmcli")
+            .args(["connection", "up", "uuid", &connection_target])
+            .output();
+
+        if connection_target != config.ssid {
+            let _ = Command::new("nmcli")
+                .args(["connection", "modify", &config.ssid, "+ipv4.addresses", &candidate_cidr])
+                .output();
+            let _ = Command::new("nmcli")
+                .args(["connection", "up", "id", &config.ssid])
+                .output();
+        }
+
+        if let Some(ref ifname) = iface {
+            let _ = Command::new("nmcli")
+                .args(["device", "reapply", ifname])
+                .output();
+
+            // Direct `ip addr add` as fallback
+            let _ = Command::new("ip")
+                .args(["-4", "addr", "add", &candidate_cidr, "dev", ifname])
+                .output();
+
+            // Verify if candidate IP was applied
+            for _ in 0..10 {
+                if let Ok(output) = Command::new("ip").args(["-4", "addr", "show", "dev", ifname]).output() {
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    if out.contains(&candidate_ip) {
+                        info!("Hotspot probe IP {} is confirmed active on {}", candidate_cidr, ifname);
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+
+            // Ping gateway once to warm up ARP/neighbor cache
+            let _ = Command::new("ping")
+                .args(["-c", "1", "-W", "1", &gw_ip.to_string()])
+                .output();
+        }
+    }
+
+    /// Ensures the Windows Wi-Fi adapter has an IP address in the `1..35` range expected
+    /// by the Android receiver discovery probe.
+    #[cfg(target_os = "windows")]
+    pub fn ensure_windows_hotspot_probe_ip(_config: &WifiDirectConfig) {
+        use std::process::Command;
+        use std::net::Ipv4Addr;
+
+        let mut gateway_opt = None;
+        for _ in 0..15 {
+            if let Ok(gw) = Self::resolve_windows_default_gateway() {
+                if let Ok(ip) = gw.parse::<Ipv4Addr>() {
+                    gateway_opt = Some(ip);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        let Some(gw_ip) = gateway_opt else {
+            return;
+        };
+
+        let octets = gw_ip.octets();
+        let candidate_last: u8 = if octets[3] == 2 { 3 } else { 2 };
+        let candidate_ip = format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], candidate_last);
+
+        let iface = Self::get_windows_wifi_interface_name().unwrap_or_else(|| "Wi-Fi".to_string());
+        let script = format!(
+            "$exists = Get-NetIPAddress -InterfaceAlias '{iface}' -IPAddress '{candidate_ip}' -ErrorAction SilentlyContinue; \
+             if (-not $exists) {{ \
+                 New-NetIPAddress -InterfaceAlias '{iface}' -IPAddress '{candidate_ip}' -PrefixLength 24 -SkipAsSource $false -ErrorAction SilentlyContinue \
+             }}"
+        );
+        let _ = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output();
     }
 
     /// Generates the XML profile and triggers Windows WLAN association via `netsh`.
@@ -564,7 +1261,7 @@ impl WifiDirectTransport {
         None
     }
 
-    /// Reconnects Windows to the specified Wi-Fi profile/SSID.
+    /// Reconnects the host to the specified Wi-Fi profile/SSID.
     pub fn reconnect_windows_wifi(ssid: &str) -> Result<(), TransportError> {
         #[cfg(target_os = "windows")]
         {
@@ -579,6 +1276,16 @@ impl WifiDirectTransport {
                 .output();
             info!("Requested Windows Wi-Fi reconnection to '{}'", ssid);
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+            let _ = Command::new("nmcli")
+                .args(["connection", "up", "id", ssid])
+                .output();
+            info!("Requested Linux Wi-Fi reconnection to '{}'", ssid);
+        }
+
         let _ = ssid;
         Ok(())
     }

@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use super::discovery::{get_windows_hotspot_probe_ips, TransportPreference};
+use super::discovery::{get_hotspot_probe_ips, TransportPreference};
 use super::registry::{
     get_registry, get_transfer_actor_handle, register_active_transfer_with_path,
     set_transfer_actor_handle, set_transfer_status, update_transfer_progress,
@@ -173,19 +173,17 @@ pub fn prepare_send_mode() {
                 WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await
             {
                 log::info!(
-                    "[SendMode] Discovered hotspot: SSID='{}', associating Windows WLAN...",
+                    "[SendMode] Discovered hotspot: SSID='{}', associating host Wi-Fi...",
                     config.ssid
                 );
-                #[cfg(target_os = "windows")]
-                {
-                    if let Err(e) = WifiDirectTransport::associate_wlan_windows(&config).await {
-                        log::warn!("[SendMode] Failed to associate Windows WLAN: {}", e);
-                    } else {
-                        log::info!(
-                            "[SendMode] Successfully associated Windows WLAN with '{}'!",
-                            config.ssid
-                        );
-                    }
+                if let Err(e) = WifiDirectTransport::associate_wlan(&config).await {
+                    log::warn!("[SendMode] Failed to associate host Wi-Fi: {}", e);
+                } else {
+                    log::info!(
+                        "[SendMode] Successfully associated host Wi-Fi with '{}'!",
+                        config.ssid
+                    );
+                    WifiDirectTransport::ensure_hotspot_probe_ip(&config);
                 }
             }
         });
@@ -230,16 +228,16 @@ pub async fn resolve_and_connect_transports_with_streams(
                             }
                         }
                     }
-                    #[cfg(target_os = "windows")]
+                    #[cfg(not(target_os = "android"))]
                     {
                         if let Some(config) = WifiDirectTransport::probe_hotspot_control_channel(
                             std::time::Duration::from_millis(250),
                         )
                         .await
                         {
-                            let cur_ssid = WifiDirectTransport::get_current_windows_wifi_ssid();
+                            let cur_ssid = WifiDirectTransport::get_current_wifi_ssid();
                             if cur_ssid.as_deref() != Some(&config.ssid) {
-                                let _ = WifiDirectTransport::associate_wlan_windows(&config).await;
+                                let _ = WifiDirectTransport::associate_wlan(&config).await;
                             }
                         }
                     }
@@ -286,7 +284,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                         )
                     })?;
                 let target_ip = if config.target_ip.is_empty() {
-                    WifiDirectTransport::resolve_windows_default_gateway()
+                    WifiDirectTransport::resolve_default_gateway()
                         .unwrap_or_else(|_| "192.168.43.1".to_string())
                 } else {
                     config.target_ip.clone()
@@ -376,7 +374,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                 })
                 .unwrap_or(false);
             if !wifi_connected && !is_explicit_loopback {
-                let probe_ips = get_windows_hotspot_probe_ips();
+                let probe_ips = get_hotspot_probe_ips();
                 for hotspot_ip in &probe_ips {
                     let mut connected_any = false;
                     for stream_idx in 1..=stream_count {
@@ -523,7 +521,7 @@ pub async fn resolve_and_connect_transports_with_streams(
                     }
 
                     // If USB is already connected or probe hotspot, connect Wi-Fi with bonded streams
-                    let probe_ips = get_windows_hotspot_probe_ips();
+                    let probe_ips = get_hotspot_probe_ips();
                     for hotspot_ip in &probe_ips {
                         let mut connected_any = false;
                         for stream_idx in 1..=stream_count {

@@ -49,6 +49,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "TurboTransfer TUI v{}\n\nUSAGE:\n    turbotransfer-tui [OPTIONS]\n\nOPTIONS:\n    -r, --receive    Launch directly into receive mode\n    -h, --help       Print help information\n    -v, --version    Print version information",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("turbotransfer-tui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let start_in_receive = args.iter().any(|a| a == "--receive" || a == "-r");
+
     // 1. Initialize Terminal immediately (<1ms)
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -58,6 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Initialize App State
     let mut app = AppState::new();
+    if start_in_receive {
+        app.start_receive_mode();
+        app.navigate_to(crate::app::Screen::ReceiveFiles);
+    }
     let tick_rate = Duration::from_millis(app.settings.poll_interval_ms);
     let mut last_tick = Instant::now();
 

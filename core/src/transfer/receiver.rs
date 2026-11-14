@@ -159,19 +159,17 @@ pub async fn enter_receive_mode(
                     WifiDirectTransport::discover_android_hotspot(target_serial.as_deref()).await
                 {
                     log::info!(
-                        "[ReceiveMode] Discovered hotspot: SSID='{}', associating Windows WLAN...",
+                        "[ReceiveMode] Discovered hotspot: SSID='{}', associating host Wi-Fi...",
                         config.ssid
                     );
-                    #[cfg(target_os = "windows")]
-                    {
-                        if let Err(e) = WifiDirectTransport::associate_wlan_windows(&config).await {
-                            log::warn!("[ReceiveMode] Failed to associate Windows WLAN: {}", e);
-                        } else {
-                            log::info!(
-                                "[ReceiveMode] Successfully associated Windows WLAN with '{}'!",
-                                config.ssid
-                            );
-                        }
+                    if let Err(e) = WifiDirectTransport::associate_wlan(&config).await {
+                        log::warn!("[ReceiveMode] Failed to associate host Wi-Fi: {}", e);
+                    } else {
+                        log::info!(
+                            "[ReceiveMode] Successfully associated host Wi-Fi with '{}'!",
+                            config.ssid
+                        );
+                        WifiDirectTransport::ensure_hotspot_probe_ip(&config);
                     }
                 } else {
                     log::warn!("[ReceiveMode] discover_android_hotspot returned None!");
